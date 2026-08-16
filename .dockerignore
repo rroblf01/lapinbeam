@@ -1,0 +1,9 @@
+.venv/
+target/
+dist/
+__pycache__/
+*.pyc
+*.so
+.pytest_cache/
+.maturin/
+.git/

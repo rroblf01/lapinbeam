@@ -29,8 +29,15 @@ async def main():
     sup = Supervisor(strategy="one_for_one")
     ingestor_ref = sup.spawn(IngestorActor)
 
-    # Connect to Node B
-    await node.connect_peer(peer)
+    # Connect to Node B (retrying while the peer comes up).
+    for _ in range(20):
+        try:
+            await node.connect_peer(peer)
+            break
+        except ConnectionError:
+            await asyncio.sleep(0.5)
+    else:
+        raise RuntimeError(f"could not connect to peer {peer!r}")
 
     # Reference to the remote processor on Node B
     remote_processor = node.get_remote_actor(peer, "processor")
