@@ -36,13 +36,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v10.0.1
+      # Plain `uv build`/`maturin build` on a bare ubuntu-latest runner tags
+      # the wheel "linux_x86_64" — PyPI rejects that tag outright, since it
+      # isn't guaranteed portable across distros. This builds inside the
+      # manylinux Docker image maturin-action selects, producing a wheel
+      # tagged "manylinux_2_17_x86_64" that PyPI actually accepts.
+      - name: Build manylinux wheel
+        uses: PyO3/maturin-action@v1
         with:
-          version: "latest"
+          target: x86_64-unknown-linux-gnu
+          manylinux: 2_17
+          args: --release --out dist
 
-      - name: Build package
-        run: uv build
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v7
