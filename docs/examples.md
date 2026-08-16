@@ -60,7 +60,11 @@ node_a's logs show `Total: 100` ACKs before tearing it down.
 
 ## Real, separate hosts
 
-Nothing about lapinbeam is loopback-specific — `NodeId` is just
+See [Getting started](getting-started.md#two-nodes-talking-to-each-other)
+for a diagram of exactly what "server A" and "server B" mean here — each is
+its own OS process, and this section just changes their addresses from
+loopback to real machines. Nothing about lapinbeam is loopback-specific —
+`NodeId` is just
 `name@host:port`, and `host` can be any address the other side can route to.
 Running the two actors on two different machines only changes the
 environment variables:

@@ -68,9 +68,34 @@ async with Node("app@127.0.0.1:0") as node:
 
 ## Two nodes talking to each other
 
-This is the shape of the two-node demo in `examples/`: node A sends `TASK`
-messages to a `processor` actor on node B; B replies with `ACK` to whichever
-actor A named as `reply_to`.
+This is the shape of the two-node demo in `examples/`, and the one thing
+worth being extra explicit about: **a `Node` is one server/process**, not an
+in-memory concept. In this example, server A runs one actor (`Ingestor`) and
+server B runs another (`Processor`) — they are two separate `python`
+processes, potentially on two separate machines, each running its own copy
+of this same script (`app_node_a.py` / `app_node_b.py` in `examples/`).
+
+```mermaid
+sequenceDiagram
+    box Server A (node_a@host:9001)
+    participant Ingestor as Ingestor actor
+    end
+    box Server B (node_b@host:9002)
+    participant Processor as Processor actor
+    end
+
+    Note over Ingestor,Processor: node.connect_peer() opens one TCP connection,<br/>shared by every actor on both servers
+
+    Ingestor->>Processor: send(TASK, reply_to="ingestor")
+    Note right of Processor: Processor.receive(msg) runs here, on server B
+    Processor->>Ingestor: send(ACK) — routed to "ingestor" by name
+    Note left of Ingestor: Ingestor.receive(msg) runs here, on server A
+```
+
+Server A sends `TASK` messages to the `processor` actor on server B; B
+replies with `ACK` to whichever actor A named as `reply_to` — A doesn't hard-code
+"reply to Ingestor", it just tells B who to answer, which is what makes the
+same `Processor` code reusable no matter who calls it.
 
 ```python
 import asyncio
@@ -78,6 +103,8 @@ import os
 from lapinbeam import Node, Supervisor, actor
 
 
+# This actor exists only on server A. Its job is to receive the ACK that
+# server B sends back once it has processed a task.
 @actor(name="ingestor")
 class Ingestor:
     async def receive(self, msg):
@@ -85,36 +112,52 @@ class Ingestor:
             print("got ack for", msg["payload_id"])
 
 
+# This actor exists only on server B. It receives TASK messages sent by
+# server A, and replies with an ACK — not to a hard-coded address, but to
+# whichever actor name server A put in `reply_to`.
 @actor(name="processor")
 class Processor:
     def __init__(self, node_ref, peer_id):
+        # `node_ref` is THIS process's own Node (server B's) — used to send
+        # replies back out. `peer_id` is the OTHER server's id (server A's);
+        # both servers already know each other's address up front, from the
+        # NODE_NAME/PEER environment variables set below.
         self.node = node_ref
         self.peer_id = peer_id
 
     async def receive(self, msg):
         if msg.get("type") == "TASK":
+            # get_remote_actor() does NOT open a new connection — it just
+            # builds a reference that reuses the one TCP connection already
+            # established between the two servers.
             remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
             await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
 
 
 async def main():
-    node_name = os.environ["NODE_NAME"]   # e.g. node_a@127.0.0.1:9001
-    peer = os.environ["PEER"]             # e.g. node_b@127.0.0.1:9002
+    # This is the only thing that differs between the two servers: each one
+    # is told its OWN address (NODE_NAME) and the OTHER server's address
+    # (PEER) via environment variables — the Python code itself is identical.
+    node_name = os.environ["NODE_NAME"]   # e.g. node_a@127.0.0.1:9001 (this server)
+    peer = os.environ["PEER"]             # e.g. node_b@127.0.0.1:9002 (the other server)
 
     node = Node(node_name)
-    await node.start()
+    await node.start()   # binds the listening socket for THIS server
     sup = Supervisor(node=node)
 
     if "node_a" in node_name:
-        sup.spawn(Ingestor)
-        await node.connect_peer(peer)
-        remote = node.get_remote_actor(peer, "processor")
+        # --- from here down, this branch only ever runs on server A ---
+        sup.spawn(Ingestor)                                 # register the actor that will receive ACKs
+        await node.connect_peer(peer)                       # dial server B and wait for the TCP handshake
+        remote = node.get_remote_actor(peer, "processor")   # a handle to B's "processor" actor
         for i in range(100):
+            # Every send() here actually crosses the network to server B.
             await remote.send({"type": "TASK", "payload_id": i, "reply_to": "ingestor"})
             await asyncio.sleep(0.01)
     else:
-        sup.spawn(Processor, node, peer)
-        await node.wait_until_stopped()
+        # --- from here down, this branch only ever runs on server B ---
+        sup.spawn(Processor, node, peer)   # register the actor that answers TASKs
+        await node.wait_until_stopped()    # server B only reacts to incoming messages; it never dials out
 
 
 asyncio.run(main())

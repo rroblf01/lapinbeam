@@ -60,7 +60,11 @@ que los logs de node_a muestren `Total: 100` ACKs antes de tirar todo abajo.
 
 ## Hosts reales y separados
 
-Nada en lapinbeam es específico de loopback — `NodeId` es simplemente
+Ver [Primeros pasos](getting-started.md#dos-nodos-hablando-entre-si) para un
+diagrama de qué significan exactamente "servidor A" y "servidor B" aquí —
+cada uno es su propio proceso del sistema operativo, y esta sección solo
+cambia sus direcciones de loopback a máquinas reales. Nada en lapinbeam es
+específico de loopback — `NodeId` es simplemente
 `nombre@host:puerto`, y `host` puede ser cualquier dirección alcanzable
 desde el otro lado. Ejecutar los dos actores en dos máquinas distintas solo
 cambia las variables de entorno:
