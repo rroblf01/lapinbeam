@@ -91,6 +91,7 @@ uv run pytest                 # Python test suite
 cargo test                    # Rust test suite
 uv run python bench/bench_remote.py   # throughput benchmarks
 uv run python bench/bench_latency.py  # RTT latency percentiles
+uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
 ```
 
 Nothing is installed on the OS: everything lives in `.venv`.

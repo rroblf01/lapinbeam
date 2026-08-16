@@ -9,6 +9,32 @@ changes.
 
 ## [Unreleased]
 
+### Performance
+
+- **Payload encode/decode is significantly faster**, measured with the new
+  `bench/bench_codec.py` (a moderately-nested realistic payload, before vs.
+  after, averaged over multiple runs):
+  - `codec.encode_payload` (pure Python): **~2.6x faster**. It no longer
+    computes a registry-lookup tag for every JSON-native scalar (int, str,
+    bool, ...), and no longer rebuilds a dict/list copy when nothing inside
+    it actually needed type-tagging.
+  - `_core.encode_payload` (Rust PyAny→JSON): **~87% faster**. Type dispatch
+    used to probe via `.extract::<bool>()`/`.extract::<i64>()`, which are
+    not simply "try and cheaply fail" — PyO3's `bool` extractor does a
+    NumPy-interop fallback that looks up `type(obj).__module__` on every
+    non-bool value, and its integer extractors call the C API directly on
+    *any* object on Python 3.10+, which raises and clears a real Python
+    exception for every non-int (a float, list, or dict). Dispatch now
+    probes with `.cast::<T>()` (a cheap C-level type check that never
+    raises) and only extracts once the concrete type is confirmed.
+  - `_core.decode_payload` (Rust JSON→PyAny) and `encode_payload`/
+    `decode_payload` no longer build an intermediate `serde_json::Value`
+    tree — they serialize/deserialize directly against Python objects
+    (`~30%` and `~2x` faster respectively for the Rust step alone).
+  - End-to-end (`RemoteRef.send()` over a real loopback connection):
+    **~24% faster**, confirmed with an alternating A/B comparison (not a
+    single before/after pair) to rule out run-to-run system noise.
+
 ### Added
 
 - **`Node(..., cluster_secret=...)`**: opt-in shared-secret handshake check.

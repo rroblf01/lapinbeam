@@ -21,6 +21,13 @@ RESERVED = "__lb_type__"
 _CodecEntry = dict[str, Callable[..., Any]]
 _registry: dict[str, _CodecEntry] = {}  # tag -> {"encode": encode_fn, "decode": decode_fn}
 
+# Exact types that are already JSON-native and can never be dataclasses,
+# Pydantic models, or (in practice) registered custom types — checked first
+# in `_encode_obj` so a plain int/str/bool/None skips `_tag()` (a string
+# format plus two attribute lookups) entirely instead of paying for it on
+# every leaf value in a payload.
+_JSON_NATIVE_TYPES = frozenset((str, int, float, bool, type(None)))
+
 
 def _tag(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
@@ -53,21 +60,42 @@ def register_codec(
 
 
 def _encode_obj(obj: Any) -> Any:
-    entry = _registry.get(_tag(type(obj)))
+    obj_type = type(obj)
+    if obj_type in _JSON_NATIVE_TYPES:
+        return obj
+    entry = _registry.get(_tag(obj_type))
     if entry is not None:
-        return {RESERVED: _tag(type(obj)), "data": entry["encode"](obj)}
+        return {RESERVED: _tag(obj_type), "data": entry["encode"](obj)}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         data = {
             f.name: _encode_obj(getattr(obj, f.name))
             for f in dataclasses.fields(obj)
         }
-        return {RESERVED: _tag(type(obj)), "data": data}
-    if _is_pydantic(type(obj)):
-        return {RESERVED: _tag(type(obj)), "data": obj.model_dump()}
+        return {RESERVED: _tag(obj_type), "data": data}
+    if _is_pydantic(obj_type):
+        return {RESERVED: _tag(obj_type), "data": obj.model_dump()}
     if isinstance(obj, dict):
-        return {k: _encode_obj(v) for k, v in obj.items()}
+        # Rebuilding a dict/list is only worth it if something inside it
+        # actually changed — for an all-JSON-native payload (the common
+        # case), returning the original object avoids allocating an
+        # equal-but-distinct copy of every container in the tree.
+        changed = False
+        out_dict = {}
+        for k, v in obj.items():
+            ev = _encode_obj(v)
+            if ev is not v:
+                changed = True
+            out_dict[k] = ev
+        return out_dict if changed else obj
     if isinstance(obj, (list, tuple)):
-        return [_encode_obj(v) for v in obj]
+        changed = False
+        out_list = []
+        for v in obj:
+            ev = _encode_obj(v)
+            if ev is not v:
+                changed = True
+            out_list.append(ev)
+        return out_list if changed else obj
     return obj
 
 
@@ -76,9 +104,23 @@ def _decode_obj(obj: Any) -> Any:
         tag = obj.get(RESERVED)
         if tag is not None:
             return _rebuild(tag, obj["data"])
-        return {k: _decode_obj(v) for k, v in obj.items()}
+        changed = False
+        out_dict = {}
+        for k, v in obj.items():
+            dv = _decode_obj(v)
+            if dv is not v:
+                changed = True
+            out_dict[k] = dv
+        return out_dict if changed else obj
     if isinstance(obj, list):
-        return [_decode_obj(v) for v in obj]
+        changed = False
+        out_list = []
+        for v in obj:
+            dv = _decode_obj(v)
+            if dv is not v:
+                changed = True
+            out_list.append(dv)
+        return out_list if changed else obj
     return obj
 
 

@@ -232,10 +232,16 @@ impl Node {
     ) -> PyResult<()> {
         let peer = NodeId::parse(peer_id)
             .map_err(|e| PyValueError::new_err(format!("invalid peer id: {e}")))?;
-        let value = convert::py_to_json(payload)?;
+        let payload_bytes = convert::py_to_json_bytes(payload)?;
         let (transport, handle) = self.require()?;
         py.detach(|| {
-            handle.block_on(transport.send_data(&peer, dst_actor, value, reply_to, correlation_id))
+            handle.block_on(transport.send_data_bytes(
+                &peer,
+                dst_actor,
+                payload_bytes,
+                reply_to,
+                correlation_id,
+            ))
         })
         .map_err(|e| PyValueError::new_err(format!("send failed: {e}")))?;
         Ok(())
@@ -253,15 +259,11 @@ impl Drop for Node {
 /// Drains inbound messages for one actor and schedules them on the Python loop.
 async fn drain_loop(mut rx: mpsc::Receiver<WireMessage>, delivery: Delivery) {
     while let Some(msg) = rx.recv().await {
-        let payload = match msg.payload_json() {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(%e, "undeliverable payload, dropping");
-                continue;
-            }
-        };
         let delivered = Python::try_attach(|py| -> PyResult<()> {
-            let obj = convert::json_to_py(py, &payload)?;
+            // Parses `msg.payload` straight into Python objects — see
+            // `py::convert::bytes_to_py` for why this skips the
+            // `serde_json::Value` step `payload_json()` used to require.
+            let obj = convert::bytes_to_py(py, &msg.payload)?;
             delivery.event_loop.call_method1(
                 py,
                 "call_soon_threadsafe",
@@ -271,7 +273,7 @@ async fn drain_loop(mut rx: mpsc::Receiver<WireMessage>, delivery: Delivery) {
         });
         match delivered {
             Some(Ok(())) => {}
-            Some(Err(e)) => tracing::warn!("failed to deliver message to python: {e}"),
+            Some(Err(e)) => tracing::warn!("undeliverable payload, dropping: {e}"),
             None => return, // interpreter is shutting down
         }
     }

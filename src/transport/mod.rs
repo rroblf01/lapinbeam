@@ -239,9 +239,25 @@ impl Transport {
         reply_to: Option<&str>,
         correlation_id: Option<u64>,
     ) -> Result<(), SendError> {
-        // Reject oversized payloads on the sender before touching the wire.
         let payload_bytes =
             serde_json::to_vec(&payload).map_err(|_| SendError::PayloadTooLarge(0))?;
+        self.send_data_bytes(peer, dst_actor, payload_bytes, reply_to, correlation_id)
+            .await
+    }
+
+    /// Same as [`Self::send_data`], for a caller that already has the
+    /// payload as JSON bytes (e.g. the PyO3 boundary, which can serialize
+    /// straight from a Python object without ever building a
+    /// `serde_json::Value` in between — see `py::convert::py_to_json_bytes`).
+    pub async fn send_data_bytes(
+        &self,
+        peer: &NodeId,
+        dst_actor: &str,
+        payload_bytes: Vec<u8>,
+        reply_to: Option<&str>,
+        correlation_id: Option<u64>,
+    ) -> Result<(), SendError> {
+        // Reject oversized payloads on the sender before touching the wire.
         if payload_bytes.len() > MAX_FRAME_SIZE as usize {
             return Err(SendError::PayloadTooLarge(payload_bytes.len()));
         }
