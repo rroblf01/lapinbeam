@@ -44,3 +44,29 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  docker-e2e:
+    name: docker compose e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images
+        run: docker compose build
+      - name: Start two-node cluster
+        run: docker compose up -d
+      - name: Verify 100/100 ACKs in node_a logs
+        run: |
+          for i in $(seq 1 60); do
+            if docker logs lapinbeam_node_a 2>&1 | grep -q "Total: 100"; then
+              echo "E2E OK: node_a received 100 ACKs"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "E2E FAILED: node_a did not receive 100 ACKs"
+          docker logs lapinbeam_node_a
+          docker logs lapinbeam_node_b
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker compose down
