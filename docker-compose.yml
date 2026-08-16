@@ -1,0 +1,28 @@
+services:
+  node_a:
+    build: .
+    container_name: lapinbeam_node_a
+    command: python app_node_a.py
+    environment:
+      - NODE_NAME=node_a@node_a:9001
+      - PEER=node_b@node_b:9002
+    ports:
+      - "9001:9001"
+    networks:
+      - lapinbeam-net
+
+  node_b:
+    build: .
+    container_name: lapinbeam_node_b
+    command: python app_node_b.py
+    environment:
+      - NODE_NAME=node_b@node_b:9002
+      - PEER=node_a@node_a:9001
+    ports:
+      - "9002:9002"
+    networks:
+      - lapinbeam-net
+
+networks:
+  lapinbeam-net:
+    driver: bridge
