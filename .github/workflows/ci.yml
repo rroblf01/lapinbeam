@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# A new commit on the same branch/PR supersedes whatever CI run is already in
+# flight for it — cancel the stale one instead of burning minutes on results
+# nobody will read. Different branches/PRs get their own group, so they never
+# cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test py${{ matrix.python-version }}

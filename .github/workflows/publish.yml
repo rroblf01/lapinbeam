@@ -12,16 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --extra=all
+        run: uv sync
 
-      - name: Run tests
+      - name: Run Python tests
         run: uv run pytest --tb=short -q
+
+      - name: Run Rust tests
+        run: cargo test
 
   # ── Build source distribution and wheel ───────────────────────────────────
   build:
@@ -32,7 +37,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           version: "latest"
 
@@ -45,10 +50,42 @@ jobs:
           name: dist
           path: dist/
 
+  # ── Install the actual built wheel and smoke-test it — this is the exact
+  #    artifact that reaches PyPI, distinct from the maturin-develop/editable
+  #    build the `test` job above exercises ─────────────────────────────────
+  smoke-test:
+    name: Smoke-test built wheel
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the built wheel
+        run: pip install dist/*.whl
+
+      - name: Smoke-import the installed wheel
+        run: python -c "import lapinbeam; print('lapinbeam', lapinbeam.__version__)"
+
+      - name: Run the Python test suite against the installed wheel
+        run: |
+          pip install pytest pytest-asyncio pydantic
+          pytest tests-python/ --tb=short -q
+
   # ── Publish to PyPI via Trusted Publisher (no token needed) ───────────────
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: smoke-test
     runs-on: ubuntu-latest
     environment: pypi          # matches the environment configured on PyPI
     permissions:

@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # Python runtime + dev dependencies pinned in pyproject.toml.
-  # Dependabot picks up the [project.optional-dependencies] groups
-  # automatically; PRs are grouped per-week to keep noise low.
+  # Python runtime + dev/docs dependencies pinned in pyproject.toml's
+  # [dependency-groups] (PEP 735). Dependabot picks these up automatically;
+  # PRs are grouped per-week to keep noise low.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -13,6 +13,22 @@ updates:
       - "dependencies"
     groups:
       python-deps:
+        patterns:
+          - "*"
+
+  # Rust dependencies pinned in Cargo.toml/Cargo.lock (pyo3, tokio, serde,
+  # bincode, ...).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      rust-deps:
         patterns:
           - "*"
 
