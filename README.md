@@ -9,7 +9,8 @@ Alpha. MVP: two-node bidirectional message passing over a multiplexed TCP transp
 
 ## Features
 
-- `@actor` decorated Python classes with `async def receive(msg)`.
+- `@actor` decorated Python classes with `async def receive(msg)`, or typed
+  dispatch via `@on(Type)` / `@on(default=True)` (see below).
 - `Supervisor` with restart strategies (`one_for_one`).
 - `Node` with transparent remote actor references.
 - Multiplexed TCP transport (one socket per peer) with bincode serialization.
@@ -40,6 +41,40 @@ Or with Docker (validated end-to-end: 100/100 ACKs inside the compose network):
 ```bash
 docker compose up --build
 ```
+
+## Typed message dispatch
+
+By default an actor implements a single `async def receive(self, msg)`. As an
+alternative, use `@on(Type)` to dispatch by the message's real type — which
+`lapinbeam.codec` already preserves for `@dataclass`/Pydantic payloads across
+nodes — and `@on(default=True)` for a catch-all handler:
+
+```python
+from dataclasses import dataclass
+from lapinbeam import actor, on
+
+
+@dataclass
+class Task:
+    payload_id: int
+    name: str
+
+
+@actor(name="worker")
+class Worker:
+    @on(Task)
+    async def handle_task(self, msg: Task):
+        ...
+
+    @on(default=True)
+    async def handle_other(self, msg):
+        print("unrecognized message:", msg)
+```
+
+An actor with any `@on` handler stops using `receive` entirely; a message
+whose type has no dedicated handler and no `@on(default=True)` fallback
+raises `TypeError` (crashing the actor, so `Supervisor` restarts it like any
+other unhandled exception). Actors that only define `receive` are unaffected.
 
 ## Development
 

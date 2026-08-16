@@ -71,9 +71,21 @@ class Supervisor:
 
     @staticmethod
     async def _drive(instance, mailbox):
+        meta = type(instance).__lapinbeam_actor__
+        handlers = meta["handlers"]
+        default_handler = meta["default_handler"]
         while True:
             msg = await mailbox.get()
-            await instance.receive(msg)
+            if not handlers:
+                await instance.receive(msg)
+                continue
+            handler_name = handlers.get(type(msg), default_handler)
+            if handler_name is None:
+                raise TypeError(
+                    f"{type(instance).__name__} has no @on handler for "
+                    f"{type(msg).__name__} messages and no @on(default=True) fallback"
+                )
+            await getattr(instance, handler_name)(msg)
 
     def _allow_restart(self):
         now = time.monotonic()

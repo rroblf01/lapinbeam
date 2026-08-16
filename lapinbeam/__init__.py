@@ -1,5 +1,5 @@
 from ._core import __version__
-from .actor import actor
+from .actor import actor, on
 from .codec import decode_payload, encode_payload, register_codec
 from .node import Node
 from .refs import ActorRef, RemoteRef
@@ -9,6 +9,7 @@ __all__ = [
     "__version__",
     "Node",
     "actor",
+    "on",
     "Supervisor",
     "ActorRef",
     "RemoteRef",
