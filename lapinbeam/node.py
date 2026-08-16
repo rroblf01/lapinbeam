@@ -10,6 +10,7 @@ import socket
 
 import lapinbeam._core as _core
 
+from . import codec
 from .refs import RemoteRef
 
 #: The most recently started node; used by `Supervisor` when no node is given.
@@ -95,7 +96,7 @@ class Node:
             raise RuntimeError("node has not been started")
         self._mailboxes[name] = mailbox
         loop = asyncio.get_running_loop()
-        callback = lambda msg: mailbox.put_nowait(msg)  # noqa: E731
+        callback = lambda msg: mailbox.put_nowait(codec.decode_payload(msg))  # noqa: E731
         self._core.register_actor(name, loop, callback)
 
     def unregister_actor(self, name):
@@ -112,7 +113,8 @@ class Node:
     async def _send_remote(self, peer_id, actor_name, msg, reply_to=None, correlation_id=None):
         if self._core is None:
             raise RuntimeError("node has not been started")
-        self._core.send_data(peer_id, actor_name, msg, reply_to, correlation_id)
+        payload = codec.encode_payload(msg)
+        self._core.send_data(peer_id, actor_name, payload, reply_to, correlation_id)
 
     def __repr__(self):
         return f"<Node {self.local_id!r}>"
