@@ -68,13 +68,13 @@ async with Node("app@127.0.0.1:0") as node:
 
 ## Dos nodos hablando entre sí
 
-Esta es la forma de la demo de dos nodos en `examples/`, y lo único que
-merece la pena dejar extra claro: **un `Node` es un servidor/proceso**, no
-un concepto que viva solo en memoria. En este ejemplo, el servidor A corre
-un actor (`Ingestor`) y el servidor B corre otro (`Processor`) — son dos
-procesos `python` separados, potencialmente en dos máquinas distintas, cada
-uno ejecutando su propia copia de este mismo script (`app_node_a.py` /
-`app_node_b.py` en `examples/`).
+Esta es la demo de dos nodos de `examples/`, y lo único que merece la pena
+dejar extra claro: **un `Node` es un servidor/proceso**, no un concepto que
+viva solo en memoria. Abajo hay **dos scripts separados** —
+`app_node_a.py` y `app_node_b.py` —, cada uno con solo el actor que ese
+servidor necesita. No son dos ramas del mismo fichero: son dos ficheros,
+pensados para correr como dos procesos `python` separados, potencialmente
+en dos máquinas distintas.
 
 ```mermaid
 sequenceDiagram
@@ -99,75 +99,96 @@ fijo "responder a Ingestor", simplemente le dice a B a quién contestar, que
 es justo lo que hace que el mismo código de `Processor` se pueda reutilizar
 sin importar quién lo llame.
 
-```python
-import asyncio
-import os
-from lapinbeam import Node, Supervisor, actor
+=== "app_node_a.py (servidor A)"
+
+    ```python
+    import asyncio
+    import os
+    from lapinbeam import Node, Supervisor, actor
 
 
-# Este actor existe solo en el servidor A. Su trabajo es recibir el ACK que
-# el servidor B envía de vuelta una vez que ha procesado una tarea.
-@actor(name="ingestor")
-class Ingestor:
-    async def receive(self, msg):
-        if msg.get("type") == "ACK":
-            print("ack recibido para", msg["payload_id"])
+    # Este actor existe solo en el servidor A. Su trabajo es recibir el
+    # ACK que el servidor B envía de vuelta una vez procesada una tarea.
+    @actor(name="ingestor")
+    class Ingestor:
+        async def receive(self, msg):
+            if msg.get("type") == "ACK":
+                print("ack recibido para", msg["payload_id"])
 
 
-# Este actor existe solo en el servidor B. Recibe los mensajes TASK que
-# envía el servidor A, y responde con un ACK — no a una dirección fija,
-# sino a cualquier nombre de actor que el servidor A haya puesto en
-# `reply_to`.
-@actor(name="processor")
-class Processor:
-    def __init__(self, node_ref, peer_id):
-        # `node_ref` es el propio Node de ESTE proceso (el del servidor B) —
-        # se usa para enviar las respuestas. `peer_id` es el id del OTRO
-        # servidor (el del A); ambos servidores ya conocen la dirección del
-        # otro de antemano, gracias a las variables de entorno
-        # NODE_NAME/PEER que se configuran más abajo.
-        self.node = node_ref
-        self.peer_id = peer_id
+    async def main():
+        node_name = os.environ["NODE_NAME"]   # p.ej. node_a@127.0.0.1:9001 (este servidor)
+        peer = os.environ["PEER"]             # p.ej. node_b@127.0.0.1:9002 (el otro servidor)
 
-    async def receive(self, msg):
-        if msg.get("type") == "TASK":
-            # get_remote_actor() NO abre una conexión nueva — solo construye
-            # una referencia que reutiliza la única conexión TCP ya
-            # establecida entre los dos servidores.
-            remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
-            await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
+        node = Node(node_name)
+        await node.start()   # vincula el socket de escucha de ESTE servidor
+        sup = Supervisor(node=node)
+        sup.spawn(Ingestor)                                # registra el actor que recibirá los ACK
 
-
-async def main():
-    # Esto es lo único que cambia entre los dos servidores: a cada uno se le
-    # indica su PROPIA dirección (NODE_NAME) y la del OTRO servidor (PEER)
-    # vía variables de entorno — el código Python en sí es idéntico.
-    node_name = os.environ["NODE_NAME"]   # p.ej. node_a@127.0.0.1:9001 (este servidor)
-    peer = os.environ["PEER"]             # p.ej. node_b@127.0.0.1:9002 (el otro servidor)
-
-    node = Node(node_name)
-    await node.start()   # vincula el socket de escucha de ESTE servidor
-    sup = Supervisor(node=node)
-
-    if "node_a" in node_name:
-        # --- de aquí para abajo, esta rama solo se ejecuta en el servidor A ---
-        sup.spawn(Ingestor)                                 # registra el actor que recibirá los ACK
-        await node.connect_peer(peer)                       # marca al servidor B y espera el handshake TCP
-        remote = node.get_remote_actor(peer, "processor")   # una referencia al actor "processor" de B
+        await node.connect_peer(peer)                      # marca al servidor B y espera el handshake TCP
+        remote = node.get_remote_actor(peer, "processor")  # una referencia al actor "processor" de B
         for i in range(100):
             # Cada send() de aquí cruza de verdad la red hasta el servidor B.
             await remote.send({"type": "TASK", "payload_id": i, "reply_to": "ingestor"})
             await asyncio.sleep(0.01)
-    else:
-        # --- de aquí para abajo, esta rama solo se ejecuta en el servidor B ---
+
+
+    asyncio.run(main())
+    ```
+
+=== "app_node_b.py (servidor B)"
+
+    ```python
+    import asyncio
+    import os
+    from lapinbeam import Node, Supervisor, actor
+
+
+    # Este actor existe solo en el servidor B. Recibe los mensajes TASK
+    # que envía el servidor A, y responde con un ACK — no a una dirección
+    # fija, sino a cualquier nombre de actor que A haya puesto en
+    # `reply_to`.
+    @actor(name="processor")
+    class Processor:
+        def __init__(self, node_ref, peer_id):
+            # `node_ref` es el propio Node de ESTE proceso (el del
+            # servidor B) — se usa para enviar las respuestas. `peer_id`
+            # es el id del OTRO servidor (el de A); ambos servidores ya
+            # conocen la dirección del otro de antemano, gracias a las
+            # variables de entorno NODE_NAME/PEER de abajo.
+            self.node = node_ref
+            self.peer_id = peer_id
+
+        async def receive(self, msg):
+            if msg.get("type") == "TASK":
+                # get_remote_actor() NO abre una conexión nueva — solo
+                # construye una referencia que reutiliza la única
+                # conexión TCP ya establecida entre los dos servidores.
+                remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
+                await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
+
+
+    async def main():
+        node_name = os.environ["NODE_NAME"]   # p.ej. node_b@127.0.0.1:9002 (este servidor)
+        peer = os.environ["PEER"]             # p.ej. node_a@127.0.0.1:9001 (el otro servidor)
+
+        node = Node(node_name)
+        await node.start()   # vincula el socket de escucha de ESTE servidor
+        sup = Supervisor(node=node)
         sup.spawn(Processor, node, peer)   # registra el actor que responde a los TASK
+
         await node.wait_until_stopped()    # el servidor B solo reacciona a mensajes entrantes; nunca marca hacia fuera
 
 
-asyncio.run(main())
-```
+    asyncio.run(main())
+    ```
 
-Ejecútalo como dos procesos separados (ver [Ejemplos](examples.md) para
+Fíjate en qué es igual y qué no: los dos scripts leen `NODE_NAME`/`PEER` del
+entorno de la misma forma, pero no hay ninguna rama condicional en ningún
+sitio — cada fichero solo desempeña un papel, exactamente igual que
+`examples/app_node_a.py` y `examples/app_node_b.py`.
+
+Ejecútalos como dos procesos separados (ver [Ejemplos](examples.md) para
 correr esto entre contenedores u hosts reales en vez de `127.0.0.1`):
 
 ```bash

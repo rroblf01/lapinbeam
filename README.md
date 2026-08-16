@@ -7,7 +7,7 @@
 Real-time distributed systems framework for Python with a Rust core.
 An actor model inspired by Erlang/Elixir (BEAM), built with Rust (Tokio) exposed through PyO3.
 
-Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.github.io/lapinbeam/>
+Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.github.io/lapinbeam/> · [Changelog](CHANGELOG.md)
 
 ## Status
 

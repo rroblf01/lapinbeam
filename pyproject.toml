@@ -32,6 +32,7 @@ Homepage = "https://github.com/rroblf01/lapinbeam"
 Repository = "https://github.com/rroblf01/lapinbeam"
 Issues = "https://github.com/rroblf01/lapinbeam/issues"
 Documentation = "https://rroblf01.github.io/lapinbeam/"
+Changelog = "https://github.com/rroblf01/lapinbeam/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
