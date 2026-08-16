@@ -16,6 +16,8 @@ pub enum SendError {
     Closed,
     /// The target peer is not connected.
     PeerNotFound,
+    /// The serialized payload would exceed the maximum frame size.
+    PayloadTooLarge(usize),
 }
 
 impl std::fmt::Display for SendError {
@@ -23,6 +25,7 @@ impl std::fmt::Display for SendError {
         match self {
             SendError::Closed => write!(f, "peer connection is closed"),
             SendError::PeerNotFound => write!(f, "peer not connected"),
+            SendError::PayloadTooLarge(n) => write!(f, "payload too large ({n} bytes)"),
         }
     }
 }

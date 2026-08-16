@@ -24,9 +24,11 @@ def get_current_node():
 class Node:
     """A distributed node identified by `name@host:port`."""
 
-    def __init__(self, node_name, listen_port=None, reconnect_interval=1.0):
+    def __init__(self, node_name, listen_port=None, reconnect_interval=1.0,
+                 connect_timeout=5.0):
         self.node_id = self._build_id(node_name, listen_port)
         self._reconnect_interval = reconnect_interval
+        self._connect_timeout = connect_timeout
         self._core = None
         self._mailboxes = {}
         self._stopped = None
@@ -81,7 +83,7 @@ class Node:
             raise RuntimeError("node has not been started")
         self._core.connect_peer(peer_id)
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + 5.0
+        deadline = loop.time() + self._connect_timeout
         while not self._core.has_peer(peer_id):
             if loop.time() > deadline:
                 raise ConnectionError(f"failed to connect to peer {peer_id!r}")

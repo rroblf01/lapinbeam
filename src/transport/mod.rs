@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
 
 use crate::runtime::NodeId;
-use crate::wire::{FrameDecoder, MessageKind, WireMessage, PROTOCOL_VERSION};
+use crate::wire::{FrameDecoder, MessageKind, WireMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION};
 
 /// Behaviour knobs of a `Transport`.
 #[derive(Debug, Clone)]
@@ -188,14 +188,22 @@ impl Transport {
         reply_to: Option<&str>,
         correlation_id: Option<u64>,
     ) -> Result<(), SendError> {
-        let msg = WireMessage::data(
-            self.next_msg_id(),
-            self.local.to_full(),
-            dst_actor,
-            payload,
-            reply_to.map(str::to_owned),
+        // Reject oversized payloads on the sender before touching the wire.
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|_| SendError::PayloadTooLarge(0))?;
+        if payload_bytes.len() > MAX_FRAME_SIZE as usize {
+            return Err(SendError::PayloadTooLarge(payload_bytes.len()));
+        }
+        let msg = WireMessage {
+            version: PROTOCOL_VERSION,
+            msg_id: self.next_msg_id(),
+            src: self.local.to_full(),
+            dst_actor: dst_actor.to_owned(),
+            kind: MessageKind::Data,
+            payload: payload_bytes,
+            reply_to: reply_to.map(str::to_owned),
             correlation_id,
-        );
+        };
         let handle = self.peers.read().await.get(peer).cloned().ok_or(SendError::PeerNotFound)?;
         handle.send(msg).await
     }
