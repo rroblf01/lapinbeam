@@ -64,6 +64,18 @@ impl Node {
 
     /// Starts the background Tokio runtime and binds the listener.
     fn start(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Best-effort: makes the crate's internal `tracing::warn!`/`debug!`
+        // calls (frame decode failures, connection drops, ...) visible via
+        // `RUST_LOG`, which nothing did before. `try_init` (rather than
+        // `init`) only errors if a subscriber is already installed — by an
+        // embedding application, or by an earlier `Node.start()` call in
+        // this process — either of which should win, so the error is
+        // intentionally ignored.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

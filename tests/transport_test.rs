@@ -7,13 +7,13 @@ use std::future::Future;
 use std::time::Duration;
 
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
 
 use _core::runtime::NodeId;
 use _core::transport::{Event, Transport, TransportConfig};
-use _core::wire::{encode_frame, WireMessage};
+use _core::wire::{encode_frame, MessageKind, WireMessage, PROTOCOL_VERSION};
 
 fn fast_config() -> TransportConfig {
     TransportConfig {
@@ -197,6 +197,40 @@ async fn unknown_actor_triggers_error_frame() {
         }
         other => panic!("expected ErrorReceived, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn protocol_version_mismatch_drops_connection() {
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+
+    let mut sock = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    let bad_handshake = WireMessage {
+        version: PROTOCOL_VERSION + 1,
+        msg_id: 1,
+        src: "future@127.0.0.1:9999".into(),
+        dst_actor: String::new(),
+        kind: MessageKind::Handshake,
+        payload: Vec::new(),
+        reply_to: None,
+        correlation_id: None,
+    };
+    sock.write_all(&encode_frame(&bad_handshake).unwrap()).await.unwrap();
+
+    // node_a must never register a peer whose handshake failed the version check.
+    let future_peer = NodeId::parse("future@127.0.0.1:9999").unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!node_a.has_peer(&future_peer).await);
+
+    // ...and must have closed its side of the connection instead of leaving
+    // it open waiting for more (possibly-misinterpreted) frames.
+    let mut buf = [0u8; 8];
+    let n = tokio::time::timeout(Duration::from_millis(500), sock.read(&mut buf))
+        .await
+        .expect("connection was not closed after a protocol version mismatch")
+        .expect("read error");
+    assert_eq!(n, 0, "expected EOF after a protocol version mismatch");
 }
 
 #[tokio::test]

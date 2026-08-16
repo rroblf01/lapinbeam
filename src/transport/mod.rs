@@ -307,6 +307,20 @@ impl Transport {
             };
 
             for msg in frames {
+                if msg.version != PROTOCOL_VERSION {
+                    // A different lapinbeam version on the other end: the
+                    // wire format itself may have changed in ways bincode
+                    // can't detect on its own (it isn't self-describing), so
+                    // don't risk misinterpreting the rest of this stream —
+                    // drop the connection instead of silently proceeding.
+                    tracing::warn!(
+                        got = msg.version,
+                        expected = PROTOCOL_VERSION,
+                        src = %msg.src,
+                        "protocol version mismatch, dropping connection"
+                    );
+                    return;
+                }
                 if msg.kind == MessageKind::Handshake {
                     if registered.is_none() {
                         if *self.stopped.borrow() {
