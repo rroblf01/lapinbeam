@@ -20,7 +20,7 @@ pyo3 = { version = "0.29", features = ["abi3-py311"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "2"
+bincode = { version = "2", features = ["serde"] }
 bytes = "1"
 tracing = "0.1"
 
