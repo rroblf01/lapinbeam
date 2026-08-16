@@ -69,34 +69,33 @@ impl PeerHandle {
 
 /// Drains the queue and writes framed messages to the socket.
 async fn writer_loop(mut write_half: OwnedWriteHalf, mut rx: mpsc::Receiver<WireMessage>) {
-    let mut frames = Vec::new();
+    // Reused across iterations (`clear()` keeps its allocated capacity) so a
+    // burst of messages is written with a single `write_all` instead of one
+    // syscall per message — collecting frames into a `Vec<Vec<u8>>` first and
+    // then writing each of them individually, as a previous version of this
+    // loop did, defeats the point of coalescing them at all.
+    let mut batch = Vec::new();
     while let Some(msg) = rx.recv().await {
+        batch.clear();
         match encode_frame(&msg) {
-            Ok(frame) => frames.push(frame),
+            Ok(frame) => batch.extend_from_slice(&frame),
             Err(e) => {
                 tracing::warn!(%e, "failed to encode frame, dropping");
                 continue;
             }
         }
-        // Coalesce as many queued messages as possible into one write syscall.
+        // Coalesce as many queued messages as possible into the same batch.
         loop {
             match rx.try_recv() {
                 Ok(next) => match encode_frame(&next) {
-                    Ok(frame) => frames.push(frame),
+                    Ok(frame) => batch.extend_from_slice(&frame),
                     Err(e) => tracing::warn!(%e, "failed to encode frame, dropping"),
                 },
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
-        let mut done = true;
-        for frame in frames.drain(..) {
-            if write_half.write_all(&frame).await.is_err() {
-                done = false;
-                break;
-            }
-        }
-        if !done {
+        if write_half.write_all(&batch).await.is_err() {
             return;
         }
     }
