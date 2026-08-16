@@ -98,7 +98,7 @@ jobs:
     name: Publish to PyPI
     needs: smoke-test
     runs-on: ubuntu-latest
-    environment: pypi          # matches the environment configured on PyPI
+    environment: publish       # must match the "Environment name" set on PyPI's trusted publisher config exactly
     permissions:
       id-token: write          # required for OIDC (Trusted Publisher)
 
