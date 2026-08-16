@@ -4,6 +4,8 @@
 
 pub mod framing;
 
+pub use framing::{encode_frame, FrameDecoder, FrameError};
+
 pub const PROTOCOL_VERSION: u8 = 1;
 
 /// Maximum accepted frame payload size (16 MiB).
@@ -75,6 +77,20 @@ impl WireMessage {
             src: src.into(),
             dst_actor: String::new(),
             kind: MessageKind::Heartbeat,
+            payload: Vec::new(),
+            reply_to: None,
+            correlation_id: None,
+        }
+    }
+
+    /// Builds the connection handshake announcing `src`.
+    pub fn handshake(msg_id: u64, src: impl Into<String>) -> Self {
+        WireMessage {
+            version: PROTOCOL_VERSION,
+            msg_id,
+            src: src.into(),
+            dst_actor: String::new(),
+            kind: MessageKind::Handshake,
             payload: Vec::new(),
             reply_to: None,
             correlation_id: None,
