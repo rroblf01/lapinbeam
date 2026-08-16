@@ -23,6 +23,13 @@ fn fast_config() -> TransportConfig {
     }
 }
 
+fn reconnect_config() -> TransportConfig {
+    TransportConfig {
+        reconnect_interval: Duration::from_millis(100),
+        ..fast_config()
+    }
+}
+
 async fn wait_until<F, Fut>(mut cond: F)
 where
     F: FnMut() -> Fut,
@@ -258,4 +265,48 @@ async fn peer_is_removed_when_connection_closes() {
         other => panic!("expected PeerDisconnected, got {other:?}"),
     }
     assert!(!node_a.has_peer(&bye).await);
+}
+
+#[tokio::test]
+async fn reconnects_to_desired_peer() {
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), reconnect_config())
+        .await
+        .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), reconnect_config())
+        .await
+        .unwrap();
+    let b_id = node_b.local_id();
+
+    let (tx_b, mut rx_b) = mpsc::channel(16);
+    node_b.register_actor("processor".into(), tx_b.clone()).await;
+
+    node_a.connect(b_id.clone()).await.unwrap();
+    wait_until(|| async { node_a.has_peer(&b_id).await }).await;
+
+    // Node B goes away entirely.
+    let events = node_a.event_stream();
+    node_b.shutdown().await;
+    match wait_for_event(events, |ev| matches!(ev, Event::PeerDisconnected(_))).await {
+        Event::PeerDisconnected(pid) => assert_eq!(pid, b_id),
+        other => panic!("expected PeerDisconnected, got {other:?}"),
+    }
+
+    // Node B comes back on the same address; node A must reconnect.
+    let node_b2 = Transport::listen(b_id.clone(), reconnect_config())
+        .await
+        .unwrap();
+    node_b2.register_actor("processor".into(), tx_b).await;
+    wait_until(|| async { node_a.has_peer(&b_id).await }).await;
+
+    node_a
+        .send_data(&b_id, "processor", json!({"ping": 1}), None, None)
+        .await
+        .unwrap();
+    let msg = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+        .await
+        .expect("no message after reconnect")
+        .expect("mailbox closed");
+    assert_eq!(msg.payload_json().unwrap(), json!({"ping": 1}));
+
+    let _ = node_b2;
 }

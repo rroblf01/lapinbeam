@@ -150,3 +150,59 @@ async def test_remote_send_between_two_nodes():
     finally:
         await node_a.stop()
         await node_b.stop()
+
+
+async def test_auto_reconnect_after_peer_restart():
+    acks = []
+
+    @actor(name="ingestor")
+    class Ingestor:
+        async def receive(self, msg):
+            acks.append(msg)
+
+    @actor(name="processor")
+    class Processor:
+        def __init__(self, node_ref, peer_id):
+            self.node = node_ref
+            self.peer_id = peer_id
+
+        async def receive(self, msg):
+            remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
+            await remote.send({"ack": msg["n"]})
+
+    node_a = Node("node_a@127.0.0.1:0", reconnect_interval=0.1)
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    node_b_id = node_b.local_id
+    node_b_host = node_b_id.split("@")[1].rsplit(":", 1)[0]
+    node_b_port = node_b_id.rsplit(":", 1)[1]
+    try:
+        Supervisor(strategy="one_for_one", node=node_a).spawn(Ingestor)
+        Supervisor(strategy="one_for_one", node=node_b).spawn(
+            Processor, node_b, node_a.local_id
+        )
+        await node_a.connect_peer(node_b_id)
+        remote = node_a.get_remote_actor(node_b_id, "processor")
+        await remote.send({"n": 1, "reply_to": "ingestor"})
+        await wait_until(lambda: len(acks) == 1)
+
+        # Node B dies...
+        await node_b.stop()
+        await asyncio.sleep(0.3)
+
+        # ...and comes back on the same address.
+        node_b = Node(f"node_b@{node_b_host}:{node_b_port}")
+        await node_b.start()
+        Supervisor(strategy="one_for_one", node=node_b).spawn(
+            Processor, node_b, node_a.local_id
+        )
+
+        # Node A must auto-reconnect; the next message flows through.
+        await wait_until(lambda: node_a.has_peer(node_b_id))
+        await remote.send({"n": 2, "reply_to": "ingestor"})
+        await wait_until(lambda: len(acks) == 2)
+        assert [msg["ack"] for msg in acks] == [1, 2]
+    finally:
+        await node_a.stop()
+        await node_b.stop()

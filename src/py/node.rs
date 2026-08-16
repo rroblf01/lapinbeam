@@ -30,6 +30,7 @@ pub struct Node {
     transport: Option<Transport>,
     runtime: Option<tokio::runtime::Runtime>,
     handle: Option<tokio::runtime::Handle>,
+    reconnect_interval: Option<std::time::Duration>,
 }
 
 impl Node {
@@ -46,7 +47,8 @@ impl Node {
     /// Creates a node bound to `name@host:port`. Port `0` picks an ephemeral
     /// port; call `start()` before use.
     #[new]
-    fn new(node_id: &str) -> PyResult<Self> {
+    #[pyo3(signature = (node_id, reconnect_interval=None))]
+    fn new(node_id: &str, reconnect_interval: Option<f64>) -> PyResult<Self> {
         let local = NodeId::parse(node_id)
             .map_err(|e| PyValueError::new_err(format!("invalid node id: {e}")))?;
         Ok(Node {
@@ -54,6 +56,8 @@ impl Node {
             transport: None,
             runtime: None,
             handle: None,
+            reconnect_interval: reconnect_interval
+                .map(std::time::Duration::from_secs_f64),
         })
     }
 
@@ -66,8 +70,15 @@ impl Node {
             .map_err(|e| PyRuntimeError::new_err(format!("failed to start runtime: {e}")))?;
 
         let local = self.local.clone();
+        let config = match self.reconnect_interval {
+            Some(interval) => TransportConfig {
+                reconnect_interval: interval,
+                ..Default::default()
+            },
+            None => TransportConfig::default(),
+        };
         let transport = py
-            .detach(|| runtime.block_on(Transport::listen(local, TransportConfig::default())))
+            .detach(|| runtime.block_on(Transport::listen(local, config)))
             .map_err(|e| {
                 PyRuntimeError::new_err(format!("failed to bind {}: {e}", self.local.to_full()))
             })?;

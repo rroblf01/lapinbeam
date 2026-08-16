@@ -10,7 +10,7 @@ mod peer;
 
 pub use peer::{PeerHandle, SendError};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, RwLock};
 
 use crate::runtime::NodeId;
 use crate::wire::{FrameDecoder, MessageKind, WireMessage, PROTOCOL_VERSION};
@@ -33,6 +33,10 @@ pub struct TransportConfig {
     pub peer_timeout: Duration,
     /// Capacity of the outbound MPSC queue per peer.
     pub peer_queue_capacity: usize,
+    /// Whether to automatically reconnect to peers that we dialed.
+    pub reconnect: bool,
+    /// Delay between reconnection attempts.
+    pub reconnect_interval: Duration,
 }
 
 impl Default for TransportConfig {
@@ -41,6 +45,8 @@ impl Default for TransportConfig {
             heartbeat_interval: Duration::from_secs(1),
             peer_timeout: Duration::from_secs(3),
             peer_queue_capacity: 256,
+            reconnect: true,
+            reconnect_interval: Duration::from_secs(1),
         }
     }
 }
@@ -64,10 +70,14 @@ pub struct Transport {
     config: Arc<TransportConfig>,
     /// peer id -> outbound handle
     peers: Arc<RwLock<HashMap<NodeId, PeerHandle>>>,
+    /// peers we intentionally dialed and want to stay connected to
+    desired: Arc<RwLock<HashSet<NodeId>>>,
     /// dst actor name -> local mailbox
     routing: Arc<RwLock<HashMap<String, Mailbox>>>,
     /// system events
     events: broadcast::Sender<Event>,
+    /// set to `true` on `shutdown()` to stop the accept loop
+    stopped: watch::Sender<bool>,
     next_msg_id: Arc<AtomicU64>,
 }
 
@@ -76,17 +86,25 @@ impl Transport {
     pub async fn listen(local: NodeId, config: TransportConfig) -> std::io::Result<Self> {
         let listener = TcpListener::bind((local.host(), local.port())).await?;
         let bound = listener.local_addr()?;
+        let (stopped_tx, stopped_rx) = watch::channel(false);
         let transport = Transport {
             local: local.with_port(bound.port()),
             config: Arc::new(config),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            desired: Arc::new(RwLock::new(HashSet::new())),
             routing: Arc::new(RwLock::new(HashMap::new())),
             events: broadcast::Sender::new(64),
+            stopped: stopped_tx,
             next_msg_id: Arc::new(AtomicU64::new(1)),
         };
         tokio::spawn({
             let t = transport.clone();
-            async move { t.accept_loop(listener).await }
+            async move { t.accept_loop(listener, stopped_rx).await }
+        });
+        tokio::spawn({
+            let t = transport.clone();
+            let events = t.events.subscribe();
+            async move { t.reconnect_supervisor(events).await }
         });
         Ok(transport)
     }
@@ -122,10 +140,13 @@ impl Transport {
     }
 
     /// Dials a peer, performs the handshake and starts tracking it.
+    /// The peer is marked as *desired*, so it is reconnected automatically
+    /// if the connection drops.
     pub async fn connect(&self, peer: NodeId) -> Result<(), std::io::Error> {
         if self.has_peer(&peer).await {
             return Ok(());
         }
+        self.desired.write().await.insert(peer.clone());
         let stream = TcpStream::connect(peer.address()).await?;
         let (read_half, write_half) = stream.into_split();
         let handle = PeerHandle::spawn(peer.clone(), write_half, self.config.peer_queue_capacity);
@@ -147,6 +168,15 @@ impl Transport {
             async move { t.heartbeat_loop(hb_peer).await }
         });
         Ok(())
+    }
+
+    /// Gracefully stops the transport: stops accepting, clears desired peers
+    /// and drops all connections. Running tasks exit as a result.
+    pub async fn shutdown(&self) {
+        let _ = self.stopped.send(true);
+        self.desired.write().await.clear();
+        let mut guard = self.peers.write().await;
+        let _ = std::mem::take(&mut *guard);
     }
 
     /// Sends a `Data` message to an actor on a remote node.
@@ -196,16 +226,26 @@ impl Transport {
         self.next_msg_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    async fn accept_loop(&self, listener: TcpListener) {
+    async fn accept_loop(&self, listener: TcpListener, mut stopped: watch::Receiver<bool>) {
         loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    let t = self.clone();
-                    tokio::spawn(async move { t.handle_inbound(stream).await });
+            tokio::select! {
+                changed = stopped.changed() => {
+                    match changed {
+                        Ok(_) => return,   // shutdown requested
+                        Err(_) => return,  // sender dropped
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(%e, "accept error");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                accepted = listener.accept() => {
+                    match accepted {
+                        Ok((stream, _addr)) => {
+                            let t = self.clone();
+                            tokio::spawn(async move { t.handle_inbound(stream).await });
+                        }
+                        Err(e) => {
+                            tracing::error!(%e, "accept error");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
                 }
             }
         }
@@ -297,6 +337,41 @@ impl Transport {
         if let Some(peer_id) = registered {
             self.peers.write().await.remove(&peer_id);
             let _ = self.events.send(Event::PeerDisconnected(peer_id));
+        }
+    }
+
+    /// Subscribes to disconnect events and re-establishes desired peers.
+    async fn reconnect_supervisor(&self, mut events: broadcast::Receiver<Event>) {
+        while let Ok(ev) = events.recv().await {
+            if let Event::PeerDisconnected(peer) = ev {
+                if self.config.reconnect && self.desired.read().await.contains(&peer) {
+                    let t = self.clone();
+                    tokio::spawn(async move { t.reconnect_loop(peer).await });
+                }
+            }
+        }
+    }
+
+    /// Retries `connect` until the desired peer is reachable again.
+    async fn reconnect_loop(&self, peer: NodeId) {
+        loop {
+            tokio::time::sleep(self.config.reconnect_interval).await;
+            if !self.desired.read().await.contains(&peer) {
+                return;
+            }
+            if self.has_peer(&peer).await {
+                return;
+            }
+            let attempt = tokio::time::timeout(
+                self.config.reconnect_interval * 3,
+                self.connect(peer.clone()),
+            )
+            .await;
+            match attempt {
+                Ok(Ok(())) => return,
+                Ok(Err(e)) => tracing::debug!(%e, peer = %peer.to_full(), "reconnect failed"),
+                Err(_) => tracing::debug!(peer = %peer.to_full(), "reconnect timed out"),
+            }
         }
     }
 

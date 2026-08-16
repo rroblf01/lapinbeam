@@ -24,8 +24,9 @@ def get_current_node():
 class Node:
     """A distributed node identified by `name@host:port`."""
 
-    def __init__(self, node_name, listen_port=None):
+    def __init__(self, node_name, listen_port=None, reconnect_interval=1.0):
         self.node_id = self._build_id(node_name, listen_port)
+        self._reconnect_interval = reconnect_interval
         self._core = None
         self._mailboxes = {}
         self._stopped = None
@@ -50,7 +51,7 @@ class Node:
         """Starts the background runtime and binds the listener."""
         if self._started:
             return
-        self._core = _core.Node(self.node_id)
+        self._core = _core.Node(self.node_id, self._reconnect_interval)
         self._core.start()
         self.node_id = self._core.local_id()
         self._stopped = asyncio.Event()
@@ -85,6 +86,12 @@ class Node:
             if loop.time() > deadline:
                 raise ConnectionError(f"failed to connect to peer {peer_id!r}")
             await asyncio.sleep(0.01)
+
+    def has_peer(self, peer_id):
+        """Whether `peer_id` is currently connected."""
+        if self._core is None:
+            return False
+        return self._core.has_peer(peer_id)
 
     def get_remote_actor(self, peer_id, actor_name):
         """Returns a reference to an actor on a remote node."""
