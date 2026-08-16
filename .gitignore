@@ -11,3 +11,5 @@ build/
 .coverage
 htmlcov/
 CLAUDE.md
+investigation.md
+site/

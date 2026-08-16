@@ -1,0 +1,64 @@
+site_name: lapinbeam
+site_description: Real-time distributed actor-model framework for Python with a Rust core.
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Typed messages: typed-messages.md
+  - lapinbeam vs. Celery + RabbitMQ: vs-celery-rabbitmq.md
+  - Benchmarks: benchmarks.md
+  - Examples: examples.md
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      languages:
+        - locale: en
+          name: English
+          build: true
+          default: true
+        - locale: es
+          name: Español
+          build: true
+          nav_translations:
+            Home: Inicio
+            Getting started: Primeros pasos
+            Typed messages: Mensajes tipados
+            lapinbeam vs. Celery + RabbitMQ: lapinbeam frente a Celery + RabbitMQ
+            Benchmarks: Benchmarks
+            Examples: Ejemplos

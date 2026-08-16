@@ -89,6 +89,21 @@ uv run python bench/bench_latency.py  # RTT latency percentiles
 
 Nothing is installed on the OS: everything lives in `.venv`.
 
+## Documentation
+
+Full docs (English + Spanish) live under `docs/` and build with MkDocs +
+Material:
+
+```bash
+uv sync --group docs           # installs mkdocs, mkdocs-material, mkdocs-static-i18n
+uv run mkdocs serve             # http://127.0.0.1:8000, live-reloads on edits
+uv run mkdocs build --strict    # static site in site/ (gitignored)
+```
+
+Each page has an English file (e.g. `docs/getting-started.md`) and its
+Spanish translation (`docs/getting-started.es.md`); `mkdocs-static-i18n`
+serves the Spanish build under `/es/` with a language switcher.
+
 ## Benchmark snapshot
 
 Measured on this machine (Python 3.14, loopback):
