@@ -20,17 +20,29 @@ impl NodeId {
             return Err(NodeIdError::EmptyHost);
         }
         let port = port_str.parse().map_err(|_| NodeIdError::InvalidPort)?;
-        Ok(NodeId { name: name.into(), host: host.into(), port })
+        Ok(NodeId {
+            name: name.into(),
+            host: host.into(),
+            port,
+        })
     }
 
     /// Creates a node id from parts.
     pub fn new(name: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
-        NodeId { name: name.into(), host: host.into(), port }
+        NodeId {
+            name: name.into(),
+            host: host.into(),
+            port,
+        }
     }
 
     /// Returns a copy with a different port (used after binding to `:0`).
     pub fn with_port(&self, port: u16) -> Self {
-        NodeId { name: self.name.clone(), host: self.host.clone(), port }
+        NodeId {
+            name: self.name.clone(),
+            host: self.host.clone(),
+            port,
+        }
     }
 
     /// Node name (`node_a`).
@@ -111,13 +123,18 @@ mod tests {
 
     #[test]
     fn with_port_updates_only_port() {
-        let id = NodeId::parse("node_a@127.0.0.1:0").unwrap().with_port(12345);
+        let id = NodeId::parse("node_a@127.0.0.1:0")
+            .unwrap()
+            .with_port(12345);
         assert_eq!(id, NodeId::parse("node_a@127.0.0.1:12345").unwrap());
     }
 
     #[test]
     fn rejects_missing_at() {
-        assert_eq!(NodeId::parse("no_at_sign:9001"), Err(NodeIdError::MissingAt));
+        assert_eq!(
+            NodeId::parse("no_at_sign:9001"),
+            Err(NodeIdError::MissingAt)
+        );
     }
 
     #[test]
@@ -137,7 +154,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_port() {
-        assert_eq!(NodeId::parse("node@host:abc"), Err(NodeIdError::InvalidPort));
+        assert_eq!(
+            NodeId::parse("node@host:abc"),
+            Err(NodeIdError::InvalidPort)
+        );
         assert_eq!(NodeId::parse("node@host:-1"), Err(NodeIdError::InvalidPort));
     }
 }

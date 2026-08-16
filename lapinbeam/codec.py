@@ -14,11 +14,12 @@ actors receive the exact object on the same node.
 
 import dataclasses
 import importlib
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 RESERVED = "__lb_type__"
 
-_registry = {}  # tag -> {"encode": encode_fn, "decode": decode_fn}
+_CodecEntry = dict[str, Callable[..., Any]]
+_registry: dict[str, _CodecEntry] = {}  # tag -> {"encode": encode_fn, "decode": decode_fn}
 
 
 def _tag(cls: type) -> str:
@@ -27,11 +28,10 @@ def _tag(cls: type) -> str:
 
 def _import_class(tag: str) -> type:
     module_name, _, qualname = tag.rpartition(".")
-    module = importlib.import_module(module_name)
-    cls = module
+    obj: object = importlib.import_module(module_name)
     for part in qualname.split("."):
-        cls = getattr(cls, part)
-    return cls
+        obj = getattr(obj, part)
+    return cast(type, obj)
 
 
 def _is_pydantic(cls: type) -> bool:
@@ -93,7 +93,7 @@ def _rebuild(tag: str, data: Any) -> Any:
     if dataclasses.is_dataclass(cls) and isinstance(cls, type):
         return cls(**{k: _decode_obj(v) for k, v in data.items()})
     if _is_pydantic(cls):
-        return cls.model_validate(data)
+        return getattr(cls, "model_validate")(data)
     raise ValueError(f"no codec registered for {tag!r}")
 
 

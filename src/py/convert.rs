@@ -73,7 +73,12 @@ pub fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
             } else if let Some(u) = n.as_u64() {
                 Ok(u.into_pyobject(py)?.to_owned().into_any().unbind())
             } else {
-                Ok(n.as_f64().unwrap().into_pyobject(py)?.to_owned().into_any().unbind())
+                Ok(n.as_f64()
+                    .unwrap()
+                    .into_pyobject(py)?
+                    .to_owned()
+                    .into_any()
+                    .unbind())
             }
         }
         Value::String(s) => Ok(s.into_pyobject(py)?.to_owned().into_any().unbind()),

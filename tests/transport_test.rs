@@ -122,7 +122,10 @@ async fn two_peers_exchange_data_bidirectionally() {
         .expect("mailbox closed");
     assert_eq!(msg_a.dst_actor, "ingestor");
     assert_eq!(msg_a.src, node_b.local_id().to_full());
-    assert_eq!(msg_a.payload_json().unwrap(), json!({"type": "ACK", "result": 2}));
+    assert_eq!(
+        msg_a.payload_json().unwrap(),
+        json!({"type": "ACK", "result": 2})
+    );
 }
 
 #[tokio::test]
@@ -179,7 +182,9 @@ async fn unknown_actor_triggers_error_frame() {
         .await
         .unwrap();
 
-    node_b.register_actor("processor".into(), mpsc::channel(4).0).await;
+    node_b
+        .register_actor("processor".into(), mpsc::channel(4).0)
+        .await;
 
     let events = node_a.event_stream();
     node_a.connect(node_b.local_id()).await.unwrap();
@@ -205,7 +210,9 @@ async fn protocol_version_mismatch_drops_connection() {
         .await
         .unwrap();
 
-    let mut sock = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    let mut sock = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
     let bad_handshake = WireMessage {
         version: PROTOCOL_VERSION + 1,
         msg_id: 1,
@@ -216,7 +223,9 @@ async fn protocol_version_mismatch_drops_connection() {
         reply_to: None,
         correlation_id: None,
     };
-    sock.write_all(&encode_frame(&bad_handshake).unwrap()).await.unwrap();
+    sock.write_all(&encode_frame(&bad_handshake).unwrap())
+        .await
+        .unwrap();
 
     // node_a must never register a peer whose handshake failed the version check.
     let future_peer = NodeId::parse("future@127.0.0.1:9999").unwrap();
@@ -346,6 +355,102 @@ async fn slow_mailbox_does_not_block_other_traffic() {
 }
 
 #[tokio::test]
+async fn simultaneous_dial_resolves_to_exactly_one_connection() {
+    // Both sides dial each other at once. Without the tiebreak, this would
+    // leave two independent live sockets between the same pair of nodes —
+    // one of them a silently wasted duplicate forever.
+    let node_a = Transport::listen(NodeId::parse("aaa@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let node_b = Transport::listen(NodeId::parse("bbb@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+
+    let (tx_a, mut rx_a) = mpsc::channel(16);
+    let (tx_b, mut rx_b) = mpsc::channel(16);
+    node_a.register_actor("sink".into(), tx_a).await;
+    node_b.register_actor("sink".into(), tx_b).await;
+
+    // Genuinely concurrent: both futures are polled interleaved, so both
+    // TCP connects and handshakes are in flight around the same time.
+    let (r1, r2) = tokio::join!(
+        node_a.connect(node_b.local_id()),
+        node_b.connect(node_a.local_id()),
+    );
+    r1.unwrap();
+    r2.unwrap();
+
+    wait_until(|| async { node_a.has_peer(&node_b.local_id()).await }).await;
+    wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
+
+    // `has_peer` only means "some connection currently exists" — one side
+    // can observe its own outbound dial as already connected before the
+    // other side's handshake has arrived and the tiebreak has resolved
+    // which connection actually wins. A message sent into that window, on
+    // what turns out to be the losing connection, is dropped when that
+    // connection is torn down — no different from any other transient
+    // drop in a system with no delivery guarantees (see docs/index.md's
+    // "Limitations"). Give the race a moment to fully settle before
+    // relying on sends succeeding, exactly as a real caller should.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Exactly one surviving connection each way, not two.
+    assert_eq!(
+        node_a.peer_count().await,
+        1,
+        "node_a should see exactly one peer"
+    );
+    assert_eq!(
+        node_b.peer_count().await,
+        1,
+        "node_b should see exactly one peer"
+    );
+
+    // The survivor must actually work in both directions.
+    node_a
+        .send_data(
+            &node_b.local_id(),
+            "sink",
+            json!({"probe": "a-to-b"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    node_b
+        .send_data(
+            &node_a.local_id(),
+            "sink",
+            json!({"probe": "b-to-a"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let msg_b = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+        .await
+        .expect("node_b never received the probe")
+        .expect("mailbox closed");
+    assert_eq!(msg_b.payload_json().unwrap(), json!({"probe": "a-to-b"}));
+
+    let msg_a = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+        .await
+        .expect("node_a never received the probe")
+        .expect("mailbox closed");
+    assert_eq!(msg_a.payload_json().unwrap(), json!({"probe": "b-to-a"}));
+
+    // Give the losing connection's teardown time to finish, then confirm
+    // the survivor is still the only entry — a mis-cleaned-up loser must
+    // not evict the winner (this is exactly the corruption bug fixed
+    // earlier, being re-checked here under a real race instead of a
+    // simulated one).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(node_a.peer_count().await, 1);
+    assert_eq!(node_b.peer_count().await, 1);
+}
+
+#[tokio::test]
 async fn stale_connection_cleanup_does_not_evict_fresh_one() {
     // Simulates two connections racing for the same peer id (e.g. both sides
     // dialing at once): the second handshake supersedes the first in the
@@ -356,14 +461,18 @@ async fn stale_connection_cleanup_does_not_evict_fresh_one() {
         .unwrap();
     let dup = NodeId::parse("dup@127.0.0.1:9997").unwrap();
 
-    let mut first = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    let mut first = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
     first
         .write_all(&encode_frame(&WireMessage::handshake(1, dup.to_full())).unwrap())
         .await
         .unwrap();
     wait_until(|| async { node_a.has_peer(&dup).await }).await;
 
-    let mut second = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    let mut second = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
     second
         .write_all(&encode_frame(&WireMessage::handshake(1, dup.to_full())).unwrap())
         .await
@@ -391,22 +500,33 @@ async fn stale_connection_cleanup_does_not_evict_fresh_one() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // The fresh (second) connection's entry must have survived.
-    assert!(node_a.has_peer(&dup).await, "stale cleanup evicted the fresh connection");
+    assert!(
+        node_a.has_peer(&dup).await,
+        "stale cleanup evicted the fresh connection"
+    );
     keepalive.abort();
 }
 
 #[tokio::test]
 async fn reconnects_to_desired_peer() {
-    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), reconnect_config())
-        .await
-        .unwrap();
-    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), reconnect_config())
-        .await
-        .unwrap();
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        reconnect_config(),
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(
+        NodeId::parse("node_b@127.0.0.1:0").unwrap(),
+        reconnect_config(),
+    )
+    .await
+    .unwrap();
     let b_id = node_b.local_id();
 
     let (tx_b, mut rx_b) = mpsc::channel(16);
-    node_b.register_actor("processor".into(), tx_b.clone()).await;
+    node_b
+        .register_actor("processor".into(), tx_b.clone())
+        .await;
 
     node_a.connect(b_id.clone()).await.unwrap();
     wait_until(|| async { node_a.has_peer(&b_id).await }).await;

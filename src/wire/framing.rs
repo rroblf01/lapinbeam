@@ -24,7 +24,9 @@ pub struct FrameDecoder {
 
 impl FrameDecoder {
     pub fn new() -> Self {
-        Self { buf: BytesMut::new() }
+        Self {
+            buf: BytesMut::new(),
+        }
     }
 
     /// Feeds the buffer with raw bytes and extracts as many complete frames
@@ -45,11 +47,9 @@ impl FrameDecoder {
             }
             self.buf.advance(4);
             let body = self.buf.split_to(len);
-            let (msg, consumed): (WireMessage, usize) = bincode::serde::decode_from_slice(
-                &body,
-                bincode::config::standard(),
-            )
-            .map_err(FrameError::Decode)?;
+            let (msg, consumed): (WireMessage, usize) =
+                bincode::serde::decode_from_slice(&body, bincode::config::standard())
+                    .map_err(FrameError::Decode)?;
             debug_assert_eq!(consumed, len);
             out.push(msg);
         }
@@ -121,7 +121,12 @@ mod tests {
 
     #[test]
     fn decoder_handles_multiple_messages_in_one_buffer() {
-        let msgs = (0..10).map(|i| WireMessage { msg_id: i, ..sample() }).collect::<Vec<_>>();
+        let msgs = (0..10)
+            .map(|i| WireMessage {
+                msg_id: i,
+                ..sample()
+            })
+            .collect::<Vec<_>>();
         let mut blob = Vec::new();
         for m in &msgs {
             blob.extend(encode_frame(m).unwrap());
@@ -133,7 +138,13 @@ mod tests {
 
     #[test]
     fn decoder_handles_split_across_batches() {
-        let msgs = vec![sample(), WireMessage { msg_id: 2, ..sample() }];
+        let msgs = vec![
+            sample(),
+            WireMessage {
+                msg_id: 2,
+                ..sample()
+            },
+        ];
         let mut blob = Vec::new();
         for m in &msgs {
             blob.extend(encode_frame(m).unwrap());

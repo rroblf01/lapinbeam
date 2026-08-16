@@ -48,6 +48,26 @@ quieras los dos en el mismo sistema.
 - Payloads que preservan el tipo: los modelos `@dataclass` y Pydantic v2
   viajan entre nodos exactamente como se enviaron, vía `lapinbeam.codec`.
 
+## Seguridad
+
+El transporte de lapinbeam hoy **no tiene autenticación ni cifrado**: el
+handshake que envía un peer al conectarse simplemente se *cree* — un
+`NodeId` es cualquier cadena que el otro extremo afirme ser, sin nada que lo
+verifique —, y todo el tráfico viaja como TCP plano, sin cifrar. Cualquier
+proceso que alcance el puerto de escucha de un nodo puede completar el
+handshake, hacerse pasar por cualquier id de peer, y enviarle mensajes.
+
+Es un trade-off deliberado y conocido para un proyecto en etapa temprana, no
+un descuido — es la misma postura de confianza que ha tenido por defecto la
+distribución de Erlang durante décadas (una cookie compartida, no
+autenticación real). Está bien para un clúster de procesos dentro de un
+límite de red en el que ya confías: una VPC privada, una única red de
+Docker Compose/Kubernetes, una LAN. **No** está bien exponer el puerto de
+escucha de un `Node` directamente a internet abierto. Si necesitas eso, pon
+lapinbeam detrás de algo que realmente autentique y cifre el enlace — una
+VPN, un túnel WireGuard, un proxy que termine mTLS — en vez de confiar en el
+propio transporte.
+
 ## Instalación
 
 ```bash

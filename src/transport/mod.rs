@@ -57,7 +57,10 @@ pub enum Event {
     PeerConnected(NodeId),
     PeerDisconnected(NodeId),
     /// An `Error` frame was received from a peer.
-    ErrorReceived { from: NodeId, detail: String },
+    ErrorReceived {
+        from: NodeId,
+        detail: String,
+    },
 }
 
 /// Inbound mailbox: messages for a local actor land here.
@@ -139,6 +142,24 @@ impl Transport {
         self.peers.read().await.len()
     }
 
+    /// Resolves a simultaneous-dial race: if both sides dial each other at
+    /// once, two connections briefly exist for the same peer, and exactly
+    /// one should survive — otherwise one of them sits there as a wasted,
+    /// unused socket indefinitely. Both ends resolve this identically, with
+    /// no extra coordination message, by agreeing that the connection
+    /// *dialed by* whichever node has the lexicographically smaller full id
+    /// (`name@host:port`) wins. `we_are_dialer` is `true` when checking our
+    /// own outbound `connect()`, `false` when checking an inbound
+    /// connection whose handshake names `peer` as the dialer.
+    fn connection_wins_tiebreak(&self, peer: &NodeId, we_are_dialer: bool) -> bool {
+        let (dialer, acceptor) = if we_are_dialer {
+            (self.local.to_full(), peer.to_full())
+        } else {
+            (peer.to_full(), self.local.to_full())
+        };
+        dialer < acceptor
+    }
+
     /// Dials a peer, performs the handshake and starts tracking it.
     /// The peer is marked as *desired*, so it is reconnected automatically
     /// if the connection drops.
@@ -150,7 +171,20 @@ impl Transport {
         let stream = TcpStream::connect(peer.address()).await?;
         let (read_half, write_half) = stream.into_split();
         let handle = PeerHandle::spawn(peer.clone(), write_half, self.config.peer_queue_capacity);
-        self.peers.write().await.insert(peer.clone(), handle.clone());
+
+        {
+            let mut peers = self.peers.write().await;
+            if peers.contains_key(&peer) && !self.connection_wins_tiebreak(&peer, true) {
+                // A connection that wins the tiebreak already exists for
+                // this peer (most likely: they dialed us concurrently and
+                // their handshake landed first). Let it stand and drop
+                // ours — `handle` (and read_half) go out of scope at the
+                // end of this function, closing our side of the socket
+                // before we ever send a handshake on it.
+                return Ok(());
+            }
+            peers.insert(peer.clone(), handle.clone());
+        }
 
         // Announce ourselves; the remote registers us upon reading this frame.
         let hs = WireMessage::handshake(self.next_msg_id(), self.local.to_full());
@@ -162,7 +196,10 @@ impl Transport {
         let read_handle = handle.clone();
         tokio::spawn({
             let t = self.clone();
-            async move { t.read_loop(read_half, None, Some((read_peer, read_handle))).await }
+            async move {
+                t.read_loop(read_half, None, Some((read_peer, read_handle)))
+                    .await
+            }
         });
         tokio::spawn({
             let t = self.clone();
@@ -190,8 +227,8 @@ impl Transport {
         correlation_id: Option<u64>,
     ) -> Result<(), SendError> {
         // Reject oversized payloads on the sender before touching the wire.
-        let payload_bytes = serde_json::to_vec(&payload)
-            .map_err(|_| SendError::PayloadTooLarge(0))?;
+        let payload_bytes =
+            serde_json::to_vec(&payload).map_err(|_| SendError::PayloadTooLarge(0))?;
         if payload_bytes.len() > MAX_FRAME_SIZE as usize {
             return Err(SendError::PayloadTooLarge(payload_bytes.len()));
         }
@@ -205,7 +242,13 @@ impl Transport {
             reply_to: reply_to.map(str::to_owned),
             correlation_id,
         };
-        let handle = self.peers.read().await.get(peer).cloned().ok_or(SendError::PeerNotFound)?;
+        let handle = self
+            .peers
+            .read()
+            .await
+            .get(peer)
+            .cloned()
+            .ok_or(SendError::PeerNotFound)?;
         handle.send(msg).await
     }
 
@@ -227,7 +270,13 @@ impl Transport {
             reply_to: None,
             correlation_id,
         };
-        let handle = self.peers.read().await.get(peer).cloned().ok_or(SendError::PeerNotFound)?;
+        let handle = self
+            .peers
+            .read()
+            .await
+            .get(peer)
+            .cloned()
+            .ok_or(SendError::PeerNotFound)?;
         handle.send(msg).await
     }
 
@@ -262,7 +311,9 @@ impl Transport {
 
     async fn handle_inbound(&self, stream: TcpStream) {
         let (read_half, write_half) = stream.into_split();
-        self.clone().read_loop(read_half, Some(write_half), None).await;
+        self.clone()
+            .read_loop(read_half, Some(write_half), None)
+            .await;
     }
 
     /// Continuous read loop for one connection.
@@ -287,7 +338,8 @@ impl Transport {
         let mut registered: Option<(NodeId, PeerHandle)> = pre_known;
 
         loop {
-            let read_result = tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)).await;
+            let read_result =
+                tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)).await;
             let n = match read_result {
                 Err(_elapsed) => break,
                 Ok(Err(e)) => {
@@ -342,15 +394,32 @@ impl Transport {
                             }
                         };
                         let handle = match write_half.take() {
-                            Some(w) => {
-                                PeerHandle::spawn(peer_id.clone(), w, self.config.peer_queue_capacity)
-                            }
+                            Some(w) => PeerHandle::spawn(
+                                peer_id.clone(),
+                                w,
+                                self.config.peer_queue_capacity,
+                            ),
                             None => {
                                 tracing::warn!("handshake on outbound connection with no writer");
                                 return;
                             }
                         };
-                        self.peers.write().await.insert(peer_id.clone(), handle.clone());
+                        {
+                            let mut peers = self.peers.write().await;
+                            if peers.contains_key(&peer_id)
+                                && !self.connection_wins_tiebreak(&peer_id, false)
+                            {
+                                // A connection that wins the tiebreak already
+                                // exists for this peer (most likely: we
+                                // dialed them concurrently and our own
+                                // handshake landed first). Drop this inbound
+                                // one instead of registering a redundant
+                                // second connection — `handle` goes out of
+                                // scope right after this block, closing it.
+                                return;
+                            }
+                            peers.insert(peer_id.clone(), handle.clone());
+                        }
                         registered = Some((peer_id.clone(), handle));
                         let _ = self.events.send(Event::PeerConnected(peer_id.clone()));
                         tokio::spawn({

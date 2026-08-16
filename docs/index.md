@@ -47,6 +47,25 @@ want both in the same system.
 - Type-preserving payloads: `@dataclass` and Pydantic v2 models round-trip
   between nodes exactly as sent, via `lapinbeam.codec`.
 
+## Security
+
+lapinbeam's transport has **no authentication and no encryption** today: the
+handshake a peer sends on connecting is simply *believed* — a `NodeId` is
+whatever string the other end claims, with nothing to verify it — and all
+traffic travels as plain, unencrypted TCP. Any process that can reach a
+node's listening port can complete a handshake, claim to be any peer id, and
+send it messages.
+
+This is a deliberate, known trade-off for an early-stage project, not an
+oversight — it's the same trust posture Erlang's distribution protocol has
+defaulted to for decades (a shared cookie, not real authentication). It's
+fine for a cluster of processes on a network boundary you already trust: a
+private VPC, a single Docker Compose/Kubernetes network, a LAN. It is
+**not** fine to expose a `Node`'s listening port directly to the open
+internet. If you need that, put lapinbeam behind something that actually
+authenticates and encrypts the link — a VPN, a WireGuard tunnel, an
+mTLS-terminating proxy — rather than relying on the transport itself.
+
 ## Install
 
 ```bash

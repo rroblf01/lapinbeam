@@ -57,8 +57,7 @@ impl Node {
             transport: None,
             runtime: None,
             handle: None,
-            reconnect_interval: reconnect_interval
-                .map(std::time::Duration::from_secs_f64),
+            reconnect_interval: reconnect_interval.map(std::time::Duration::from_secs_f64),
         })
     }
 
@@ -168,7 +167,10 @@ impl Node {
                 transport_register.register_actor(name, tx).await;
             });
         });
-        let delivery = Delivery { event_loop, callback };
+        let delivery = Delivery {
+            event_loop,
+            callback,
+        };
         handle.spawn(drain_loop(rx, delivery));
         Ok(())
     }
@@ -194,14 +196,13 @@ impl Node {
     /// `event_dict` has a `"kind"` key (`"peer_connected"`,
     /// `"peer_disconnected"` or `"error"`), a `"peer"` key with the peer's
     /// full id, and — for `"error"` — a `"detail"` key.
-    fn set_event_handler(
-        &mut self,
-        event_loop: Py<PyAny>,
-        callback: Py<PyAny>,
-    ) -> PyResult<()> {
+    fn set_event_handler(&mut self, event_loop: Py<PyAny>, callback: Py<PyAny>) -> PyResult<()> {
         let (transport, handle) = self.require()?;
         let events = transport.event_stream();
-        let delivery = Delivery { event_loop, callback };
+        let delivery = Delivery {
+            event_loop,
+            callback,
+        };
         handle.spawn(event_drain_loop(events, delivery));
         Ok(())
     }
@@ -249,9 +250,11 @@ async fn drain_loop(mut rx: mpsc::Receiver<WireMessage>, delivery: Delivery) {
         };
         let delivered = Python::try_attach(|py| -> PyResult<()> {
             let obj = convert::json_to_py(py, &payload)?;
-            delivery
-                .event_loop
-                .call_method1(py, "call_soon_threadsafe", (&delivery.callback, obj))?;
+            delivery.event_loop.call_method1(
+                py,
+                "call_soon_threadsafe",
+                (&delivery.callback, obj),
+            )?;
             Ok(())
         });
         match delivered {
@@ -290,9 +293,11 @@ async fn event_drain_loop(mut events: broadcast::Receiver<Event>, delivery: Deli
                     dict.set_item("detail", detail)?;
                 }
             }
-            delivery
-                .event_loop
-                .call_method1(py, "call_soon_threadsafe", (&delivery.callback, dict))?;
+            delivery.event_loop.call_method1(
+                py,
+                "call_soon_threadsafe",
+                (&delivery.callback, dict),
+            )?;
             Ok(())
         });
         match delivered {

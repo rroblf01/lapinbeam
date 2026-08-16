@@ -34,10 +34,37 @@ jobs:
           PYO3_PYTHON: python3
       - name: Run Python tests
         run: uv run pytest
+
+  # Rust results don't depend on the Python version, so this runs once
+  # instead of once per matrix entry above.
+  rust-checks:
+    name: rust fmt/clippy/test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: astral-sh/setup-uv@v6
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
       - name: Run Rust tests
         run: cargo test
         env:
           PYO3_PYTHON: python3
+
+  # mypy only needs to read lapinbeam/'s source + its _core.pyi stub, not the
+  # compiled extension — no Rust toolchain or `uv sync` build needed here.
+  typecheck:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v6
+      - name: mypy
+        run: uv run --with mypy --no-project -- mypy lapinbeam/
 
   build-wheels:
     name: build wheels
@@ -53,9 +80,28 @@ jobs:
           name: dist
           path: dist/
 
-  docs:
-    name: build & deploy docs
+  # Builds and strict-validates the docs on every push/PR — a broken doc
+  # link or i18n config used to only surface after merging to main, since
+  # `mkdocs build` only ever ran as part of the deploy-to-Pages job below.
+  docs-validate:
+    name: build & validate docs
     needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v6
+      - name: Install docs dependencies
+        run: uv sync --group docs
+      - name: Build site
+        run: uv run mkdocs build --strict
+      - uses: actions/upload-artifact@v7
+        with:
+          name: site
+          path: site/
+
+  docs-deploy:
+    name: deploy docs
+    needs: [docs-validate]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -66,12 +112,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
-      - name: Install docs dependencies
-        run: uv sync --group docs
-      - name: Build site
-        run: uv run mkdocs build --strict
+      - name: Download built site
+        uses: actions/download-artifact@v8
+        with:
+          name: site
+          path: site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
