@@ -1,5 +1,9 @@
 site_name: lapinbeam
 site_description: Real-time distributed actor-model framework for Python with a Rust core.
+site_url: https://rroblf01.github.io/lapinbeam/
+repo_url: https://github.com/rroblf01/lapinbeam
+repo_name: rroblf01/lapinbeam
+edit_uri: edit/main/docs/
 
 docs_dir: docs
 site_dir: site
@@ -24,6 +28,7 @@ theme:
     - navigation.top
     - content.code.copy
     - content.code.annotate
+    - content.action.edit
 
 markdown_extensions:
   - admonition

@@ -1,7 +1,13 @@
 # lapinbeam
 
+[![CI](https://github.com/rroblf01/lapinbeam/actions/workflows/ci.yml/badge.svg)](https://github.com/rroblf01/lapinbeam/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://rroblf01.github.io/lapinbeam/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/rroblf01/lapinbeam/blob/main/LICENSE)
+
 Real-time distributed systems framework for Python with a Rust core.
 An actor model inspired by Erlang/Elixir (BEAM), built with Rust (Tokio) exposed through PyO3.
+
+Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.github.io/lapinbeam/>
 
 ## Status
 

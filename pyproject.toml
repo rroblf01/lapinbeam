@@ -27,6 +27,12 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/rroblf01/lapinbeam"
+Repository = "https://github.com/rroblf01/lapinbeam"
+Issues = "https://github.com/rroblf01/lapinbeam/issues"
+Documentation = "https://rroblf01.github.io/lapinbeam/"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
