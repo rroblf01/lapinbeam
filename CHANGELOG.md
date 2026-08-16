@@ -49,6 +49,11 @@ changes.
   (a plain build was being rejected by PyPI) and smoke-tests the actual
   built wheel — installs it in a clean environment and runs the test suite
   against it — before publishing.
+- **macOS and Windows**: `ci.yml` now also runs the test suite on
+  `macos-latest` (Apple Silicon), `macos-15-intel`, and `windows-latest`;
+  `publish.yml` builds and smoke-tests real wheels for all four platform
+  targets (Linux manylinux, macOS x86_64/aarch64, Windows x64) before
+  publishing, instead of only Linux. Not yet confirmed by an actual CI run.
 
 ## [0.1.0] - 2026-08-16
 

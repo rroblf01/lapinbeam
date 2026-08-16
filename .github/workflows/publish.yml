@@ -28,9 +28,11 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
-  # ── Build source distribution and wheel ───────────────────────────────────
-  build:
-    name: Build distribution
+  # ── Build wheels — one job per OS family, matching the platforms maturin
+  #    itself generates CI for (`maturin generate-ci github`), since none of
+  #    this can be exercised or verified from this (Linux) dev machine ───────
+  build-linux:
+    name: build wheel (linux x86_64)
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -57,23 +59,89 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: dist
+          name: wheels-linux
           path: dist/
 
-  # ── Install the actual built wheel and smoke-test it — this is the exact
-  #    artifact that reaches PyPI, distinct from the maturin-develop/editable
-  #    build the `test` job above exercises ─────────────────────────────────
+  build-macos:
+    name: build wheel (macos ${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel # x86_64 (Intel)
+            target: x86_64
+          - runner: macos-latest # aarch64 (Apple Silicon)
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist/
+
+  build-windows:
+    name: build wheel (windows x64)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows
+          path: dist/
+
+  # ── Install each actual built wheel, on the OS it was built for, and
+  #    smoke-test it — this is the exact artifact that reaches PyPI, distinct
+  #    from the maturin-develop/editable build the `test` job above exercises
   smoke-test:
-    name: Smoke-test built wheel
-    needs: build
-    runs-on: ubuntu-latest
+    name: smoke-test wheel (${{ matrix.os }})
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: wheels-linux
+          - os: macos-15-intel
+            artifact: wheels-macos-x86_64
+          - os: macos-latest
+            artifact: wheels-macos-aarch64
+          - os: windows-latest
+            artifact: wheels-windows
     steps:
       - uses: actions/checkout@v7
 
       - name: Download distribution artifacts
         uses: actions/download-artifact@v8
         with:
-          name: dist
+          name: ${{ matrix.artifact }}
           path: dist/
 
       - name: Set up Python
@@ -82,6 +150,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the built wheel
+        shell: bash
         run: pip install dist/*.whl
 
       - name: Smoke-import the installed wheel
@@ -90,6 +159,7 @@ jobs:
         # lapinbeam` resolves to that folder before site-packages — it has
         # no compiled `_core` extension, so it's not the wheel we just
         # installed, just a same-named folder that happens to shadow it.
+        shell: bash
         run: |
           cd "$(mktemp -d)"
           python -c "import lapinbeam; print('lapinbeam', lapinbeam.__version__)"
@@ -99,6 +169,7 @@ jobs:
         # no lapinbeam/ subfolder of its own, so `import lapinbeam` in the
         # test files resolves to site-packages instead of the repo root.
         working-directory: tests-python
+        shell: bash
         run: |
           pip install pytest pytest-asyncio pydantic
           pytest --tb=short -q
@@ -113,11 +184,12 @@ jobs:
       id-token: write          # required for OIDC (Trusted Publisher)
 
     steps:
-      - name: Download distribution artifacts
+      - name: Download all wheel + sdist artifacts
         uses: actions/download-artifact@v8
         with:
-          name: dist
+          pattern: wheels-*
           path: dist/
+          merge-multiple: true
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

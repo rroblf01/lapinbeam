@@ -35,6 +35,42 @@ jobs:
       - name: Run Python tests
         run: uv run pytest
 
+  # Same as `test` above, but on macOS and Windows, with a reduced Python
+  # matrix (oldest + newest supported) rather than all four versions — the
+  # full matrix already runs on Linux; this is about catching genuine
+  # platform differences (socket behavior, path handling, ...), not
+  # re-checking every Python version on every OS.
+  test-cross-platform:
+    name: test ${{ matrix.os }} py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest # Apple Silicon (arm64)
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.14"
+          - os: macos-15-intel # Intel (x86_64)
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - name: Build extension and install deps
+        run: uv sync
+      - name: Run Python tests
+        run: uv run pytest
+      - name: Run Rust tests
+        run: cargo test
+
   # Rust results don't depend on the Python version, so this runs once
   # instead of once per matrix entry above.
   rust-checks:
