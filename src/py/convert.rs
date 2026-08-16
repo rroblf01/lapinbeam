@@ -5,7 +5,7 @@
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyFloat, PyList, PyTuple};
 use serde_json::{Map, Number, Value};
 
 /// Converts an arbitrary Python object into a `serde_json::Value`.
@@ -25,7 +25,8 @@ pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(u) = obj.extract::<u64>() {
         return Ok(Value::Number(Number::from(u)));
     }
-    if let Ok(f) = obj.extract::<f64>() {
+    if let Ok(float) = obj.cast::<PyFloat>() {
+        let f: f64 = float.extract()?;
         return match Number::from_f64(f) {
             Some(n) => Ok(Value::Number(n)),
             None => Err(PyValueError::new_err("non-finite floats are not supported")),

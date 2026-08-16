@@ -30,6 +30,29 @@ def test_payload_rejects_non_json():
         _core.encode_payload(object())
 
 
+@pytest.mark.parametrize(
+    "value",
+    [0, 1, -1, 2**63 - 1, -(2**63), 2**64 - 1],
+)
+def test_int_types_are_preserved(value):
+    decoded = _core.decode_payload(_core.encode_payload(value))
+    assert decoded == value
+    assert type(decoded) is int
+
+
+@pytest.mark.parametrize("value", [3.5, 0.0, -1e10, 1.5e300])
+def test_float_types_are_preserved(value):
+    decoded = _core.decode_payload(_core.encode_payload(value))
+    assert decoded == value
+    assert type(decoded) is float
+
+
+@pytest.mark.parametrize("value", [2**80, -(2**80), 2**100])
+def test_out_of_range_ints_raise_type_error(value):
+    with pytest.raises(TypeError):
+        _core.encode_payload(value)
+
+
 async def test_two_nodes_message_flow():
     node_a = _core.Node("node_a@127.0.0.1:0")
     node_b = _core.Node("node_b@127.0.0.1:0")
