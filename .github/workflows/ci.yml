@@ -45,6 +45,33 @@ jobs:
           name: dist
           path: dist/
 
+  docs:
+    name: build & deploy docs
+    needs: [test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install docs dependencies
+        run: uv sync --group docs
+      - name: Build site
+        run: uv run mkdocs build --strict
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   docker-e2e:
     name: docker compose e2e
     runs-on: ubuntu-latest
