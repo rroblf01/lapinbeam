@@ -75,12 +75,23 @@ jobs:
         run: pip install dist/*.whl
 
       - name: Smoke-import the installed wheel
-        run: python -c "import lapinbeam; print('lapinbeam', lapinbeam.__version__)"
+        # Run outside the checked-out source tree: with the repo (and its
+        # ./lapinbeam/ source folder) as the working directory, `import
+        # lapinbeam` resolves to that folder before site-packages — it has
+        # no compiled `_core` extension, so it's not the wheel we just
+        # installed, just a same-named folder that happens to shadow it.
+        run: |
+          cd "$(mktemp -d)"
+          python -c "import lapinbeam; print('lapinbeam', lapinbeam.__version__)"
 
       - name: Run the Python test suite against the installed wheel
+        # Same shadowing risk as above — run from tests-python/, which has
+        # no lapinbeam/ subfolder of its own, so `import lapinbeam` in the
+        # test files resolves to site-packages instead of the repo root.
+        working-directory: tests-python
         run: |
           pip install pytest pytest-asyncio pydantic
-          pytest tests-python/ --tb=short -q
+          pytest --tb=short -q
 
   # ── Publish to PyPI via Trusted Publisher (no token needed) ───────────────
   publish:
