@@ -309,6 +309,17 @@ impl Transport {
             for msg in frames {
                 if msg.kind == MessageKind::Handshake {
                     if registered.is_none() {
+                        if *self.stopped.borrow() {
+                            // `shutdown()` may have already run (and found no
+                            // entry for this not-yet-registered peer to
+                            // clear) while this handshake was still in
+                            // flight. Registering it now would silently
+                            // resurrect a connection `shutdown()` was
+                            // supposed to have ended, so bail out instead —
+                            // dropping `write_half` here closes our side of
+                            // the socket.
+                            return;
+                        }
                         let peer_id = match NodeId::parse(&msg.src) {
                             Ok(id) => id,
                             Err(e) => {
