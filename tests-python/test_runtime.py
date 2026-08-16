@@ -152,6 +152,63 @@ async def test_remote_send_between_two_nodes():
         await node_b.stop()
 
 
+async def test_node_as_async_context_manager():
+    received = []
+
+    @actor(name="echo")
+    class Echo:
+        async def receive(self, msg):
+            received.append(msg)
+
+    async with Node("node@127.0.0.1:0") as node:
+        assert node.local_id.startswith("node@")
+        ref = Supervisor(strategy="one_for_one", node=node).spawn(Echo)
+        await ref.send({"x": 1})
+        await wait_until(lambda: len(received) == 1)
+
+    # __aexit__ must have stopped the node.
+    assert node._core is None
+    assert node._started is False
+
+
+async def test_on_event_surfaces_actor_not_found_error():
+    events = []
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        node_a.on_event(events.append)
+        await node_a.connect_peer(node_b.local_id)
+        remote = node_a.get_remote_actor(node_b.local_id, "no_such_actor")
+        await remote.send({"type": "TASK"})
+        await wait_until(lambda: any(e["kind"] == "error" for e in events))
+        error = next(e for e in events if e["kind"] == "error")
+        assert error["peer"] == node_b.local_id
+        assert "actor_not_found" in error["detail"]
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_on_event_surfaces_peer_connected_and_disconnected():
+    events = []
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    node_a.on_event(events.append)
+    try:
+        await node_a.connect_peer(node_b.local_id)
+        await wait_until(lambda: any(e["kind"] == "peer_connected" for e in events))
+        await node_b.stop()
+        await wait_until(lambda: any(e["kind"] == "peer_disconnected" for e in events))
+    finally:
+        await node_a.stop()
+
+
 async def test_auto_reconnect_after_peer_restart():
     acks = []
 

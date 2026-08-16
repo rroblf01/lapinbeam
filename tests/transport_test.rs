@@ -268,6 +268,100 @@ async fn peer_is_removed_when_connection_closes() {
 }
 
 #[tokio::test]
+async fn slow_mailbox_does_not_block_other_traffic() {
+    // A saturated actor mailbox must not stall the read loop: other actors on
+    // the same connection, and heartbeat replies, must keep flowing.
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+
+    // Tiny capacity so it saturates almost immediately and is never drained.
+    let (tx_slow, _rx_slow_not_drained) = mpsc::channel(1);
+    let (tx_fast, mut rx_fast) = mpsc::channel(16);
+    node_b.register_actor("slow".into(), tx_slow).await;
+    node_b.register_actor("fast".into(), tx_fast).await;
+
+    node_a.connect(node_b.local_id()).await.unwrap();
+    wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
+
+    // Flood the slow actor well past its mailbox capacity.
+    for i in 0..50 {
+        node_a
+            .send_data(&node_b.local_id(), "slow", json!({"i": i}), None, None)
+            .await
+            .unwrap();
+    }
+    // The fast actor must still receive promptly, not stuck behind "slow".
+    node_a
+        .send_data(&node_b.local_id(), "fast", json!({"ok": true}), None, None)
+        .await
+        .unwrap();
+    let msg = tokio::time::timeout(Duration::from_millis(500), rx_fast.recv())
+        .await
+        .expect("fast actor was blocked behind the slow one's full mailbox")
+        .expect("mailbox closed");
+    assert_eq!(msg.payload_json().unwrap(), json!({"ok": true}));
+
+    // Heartbeats must also still be flowing on the same connection.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(node_a.has_peer(&node_b.local_id()).await);
+    assert!(node_b.has_peer(&node_a.local_id()).await);
+}
+
+#[tokio::test]
+async fn stale_connection_cleanup_does_not_evict_fresh_one() {
+    // Simulates two connections racing for the same peer id (e.g. both sides
+    // dialing at once): the second handshake supersedes the first in the
+    // peers map. When the first (stale) connection later dies, it must not
+    // remove the second (current) connection's entry.
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let dup = NodeId::parse("dup@127.0.0.1:9997").unwrap();
+
+    let mut first = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    first
+        .write_all(&encode_frame(&WireMessage::handshake(1, dup.to_full())).unwrap())
+        .await
+        .unwrap();
+    wait_until(|| async { node_a.has_peer(&dup).await }).await;
+
+    let mut second = TcpStream::connect(node_a.local_id().address()).await.unwrap();
+    second
+        .write_all(&encode_frame(&WireMessage::handshake(1, dup.to_full())).unwrap())
+        .await
+        .unwrap();
+    // Give the second handshake time to be processed and supersede the first.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(node_a.has_peer(&dup).await);
+
+    // Keep connection 2 alive on its own (independent of connection 1): feed
+    // it bytes faster than `peer_timeout` so it never times out by itself,
+    // isolating the effect under test (connection 1's belated cleanup).
+    let keepalive = tokio::spawn(async move {
+        loop {
+            let hb = encode_frame(&WireMessage::heartbeat(1, "dup@127.0.0.1:9997")).unwrap();
+            if second.write_all(&hb).await.is_err() {
+                return second;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    });
+
+    // Kill the stale (first) connection only.
+    drop(first);
+    // Long enough for the stale read loop to notice EOF/timeout and clean up.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The fresh (second) connection's entry must have survived.
+    assert!(node_a.has_peer(&dup).await, "stale cleanup evicted the fresh connection");
+    keepalive.abort();
+}
+
+#[tokio::test]
 async fn reconnects_to_desired_peer() {
     let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), reconnect_config())
         .await

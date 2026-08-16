@@ -159,9 +159,10 @@ impl Transport {
         let _ = self.events.send(Event::PeerConnected(peer.clone()));
         let read_peer = peer.clone();
         let hb_peer = peer.clone();
+        let read_handle = handle.clone();
         tokio::spawn({
             let t = self.clone();
-            async move { t.read_loop(read_half, None, Some(read_peer)).await }
+            async move { t.read_loop(read_half, None, Some((read_peer, read_handle))).await }
         });
         tokio::spawn({
             let t = self.clone();
@@ -269,17 +270,21 @@ impl Transport {
     /// * `write_half` — owned by the loop until the handshake arrives, at which
     ///   point it is handed to the writer task. `None` for outbound connections,
     ///   where the writer already exists.
-    /// * `pre_known` — the peer id for outbound connections; the handshake is
-    ///   only used to (re)confirm it.
+    /// * `pre_known` — the peer id and its `PeerHandle` for outbound
+    ///   connections; the handshake is only used to (re)confirm the id. The
+    ///   handle is kept so that, on disconnect, this loop only removes the
+    ///   peers-map entry if it still points at *this* connection — otherwise a
+    ///   stale connection racing a newer one (e.g. both sides dialing at once)
+    ///   would evict the fresh connection it lost the race to.
     async fn read_loop(
         self,
         mut read_half: OwnedReadHalf,
         mut write_half: Option<OwnedWriteHalf>,
-        pre_known: Option<NodeId>,
+        pre_known: Option<(NodeId, PeerHandle)>,
     ) {
         let mut decoder = FrameDecoder::new();
         let mut read_buf = [0u8; 4096];
-        let mut registered = pre_known;
+        let mut registered: Option<(NodeId, PeerHandle)> = pre_known;
 
         loop {
             let read_result = tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)).await;
@@ -320,8 +325,8 @@ impl Transport {
                                 return;
                             }
                         };
-                        self.peers.write().await.insert(peer_id.clone(), handle);
-                        registered = Some(peer_id.clone());
+                        self.peers.write().await.insert(peer_id.clone(), handle.clone());
+                        registered = Some((peer_id.clone(), handle));
                         let _ = self.events.send(Event::PeerConnected(peer_id.clone()));
                         tokio::spawn({
                             let t = self.clone();
@@ -332,7 +337,7 @@ impl Transport {
                 }
 
                 let peer_id = match registered.as_ref() {
-                    Some(id) => id.clone(),
+                    Some((id, _)) => id.clone(),
                     None => {
                         tracing::warn!("data before handshake, dropping connection");
                         return;
@@ -342,9 +347,18 @@ impl Transport {
             }
         }
 
-        if let Some(peer_id) = registered {
-            self.peers.write().await.remove(&peer_id);
-            let _ = self.events.send(Event::PeerDisconnected(peer_id));
+        if let Some((peer_id, my_handle)) = registered {
+            // Only evict the peers-map entry if it still points at this exact
+            // connection. If both sides dialed at once, or a fresh connection
+            // for the same peer id was already established, this stale
+            // connection's cleanup must not clobber the newer one.
+            let mut peers = self.peers.write().await;
+            let is_current = matches!(peers.get(&peer_id), Some(current) if current.is_same_connection(&my_handle));
+            if is_current {
+                peers.remove(&peer_id);
+                drop(peers);
+                let _ = self.events.send(Event::PeerDisconnected(peer_id));
+            }
         }
     }
 
@@ -398,8 +412,19 @@ impl Transport {
                 let mailbox = self.routing.read().await.get(&msg.dst_actor).cloned();
                 match mailbox {
                     Some(mailbox) => {
-                        let _ = mailbox.send(msg).await;
-                    }                    None => {
+                        // Non-blocking first: a full mailbox must never stall
+                        // this read loop, since that would also delay heartbeat
+                        // replies and other actors' frames on this connection.
+                        // Tokio's bounded-channel permits are granted in FIFO
+                        // order, so handing the send off to its own task still
+                        // preserves per-actor message ordering.
+                        if let Err(mpsc::error::TrySendError::Full(msg)) = mailbox.try_send(msg) {
+                            tokio::spawn(async move {
+                                let _ = mailbox.send(msg).await;
+                            });
+                        }
+                    }
+                    None => {
                         let detail = format!("actor_not_found:{}", msg.dst_actor);
                         let _ = self.send_error(&from, detail, msg.correlation_id).await;
                     }

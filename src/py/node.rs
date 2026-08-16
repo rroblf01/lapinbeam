@@ -7,10 +7,11 @@
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use tokio::sync::mpsc;
+use pyo3::types::PyDict;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::runtime::NodeId;
-use crate::transport::{Transport, TransportConfig};
+use crate::transport::{Event, Transport, TransportConfig};
 use crate::wire::WireMessage;
 
 use super::convert;
@@ -133,8 +134,15 @@ impl Node {
     /// Registers a local actor mailbox. Inbound messages for `name` are
     /// scheduled as `callback(message_dict)` on `event_loop` via
     /// `call_soon_threadsafe`.
+    ///
+    /// Blocks (off the GIL) until the routing table update lands, so that by
+    /// the time this call returns, remote sends to `name` are guaranteed to
+    /// find the mailbox rather than racing a fire-and-forget task — this
+    /// also fixes the reorder hazard between a rapid unregister/register pair
+    /// (e.g. `Supervisor` restarting a crashed actor).
     fn register_actor(
         &mut self,
+        py: Python<'_>,
         name: &str,
         event_loop: Py<PyAny>,
         callback: Py<PyAny>,
@@ -143,21 +151,46 @@ impl Node {
         let name = name.to_string();
         let (tx, rx) = mpsc::channel(256);
         let transport_register = transport.clone();
-        handle.spawn(async move {
-            transport_register.register_actor(name, tx).await;
+        py.detach(|| {
+            handle.block_on(async move {
+                transport_register.register_actor(name, tx).await;
+            });
         });
         let delivery = Delivery { event_loop, callback };
         handle.spawn(drain_loop(rx, delivery));
         Ok(())
     }
 
-    /// Removes a local actor mailbox.
-    fn unregister_actor(&mut self, name: &str) -> PyResult<()> {
+    /// Removes a local actor mailbox. See `register_actor` for why this
+    /// blocks until the removal is applied.
+    fn unregister_actor(&mut self, py: Python<'_>, name: &str) -> PyResult<()> {
         let (transport, handle) = self.require()?;
         let name = name.to_string();
-        handle.spawn(async move {
-            transport.unregister_actor(&name).await;
+        py.detach(|| {
+            handle.block_on(async move {
+                transport.unregister_actor(&name).await;
+            });
         });
+        Ok(())
+    }
+
+    /// Registers a handler for system events: peer connected/disconnected and
+    /// errors reported by a peer (e.g. a send to an unknown remote actor).
+    /// `callback(event_dict)` is scheduled on `event_loop` via
+    /// `call_soon_threadsafe`, same delivery mechanism as actor messages.
+    ///
+    /// `event_dict` has a `"kind"` key (`"peer_connected"`,
+    /// `"peer_disconnected"` or `"error"`), a `"peer"` key with the peer's
+    /// full id, and — for `"error"` — a `"detail"` key.
+    fn set_event_handler(
+        &mut self,
+        event_loop: Py<PyAny>,
+        callback: Py<PyAny>,
+    ) -> PyResult<()> {
+        let (transport, handle) = self.require()?;
+        let events = transport.event_stream();
+        let delivery = Delivery { event_loop, callback };
+        handle.spawn(event_drain_loop(events, delivery));
         Ok(())
     }
 
@@ -212,6 +245,47 @@ async fn drain_loop(mut rx: mpsc::Receiver<WireMessage>, delivery: Delivery) {
         match delivered {
             Some(Ok(())) => {}
             Some(Err(e)) => tracing::warn!("failed to deliver message to python: {e}"),
+            None => return, // interpreter is shutting down
+        }
+    }
+}
+
+/// Drains system events (peer connected/disconnected, errors) and schedules
+/// them on the Python loop as plain dicts.
+async fn event_drain_loop(mut events: broadcast::Receiver<Event>, delivery: Delivery) {
+    loop {
+        let event = match events.recv().await {
+            Ok(ev) => ev,
+            // A slow consumer missed some events; keep going with the rest
+            // rather than dying, since events are advisory, not delivery-critical.
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let delivered = Python::try_attach(|py| -> PyResult<()> {
+            let dict = PyDict::new(py);
+            match event {
+                Event::PeerConnected(peer) => {
+                    dict.set_item("kind", "peer_connected")?;
+                    dict.set_item("peer", peer.to_full())?;
+                }
+                Event::PeerDisconnected(peer) => {
+                    dict.set_item("kind", "peer_disconnected")?;
+                    dict.set_item("peer", peer.to_full())?;
+                }
+                Event::ErrorReceived { from, detail } => {
+                    dict.set_item("kind", "error")?;
+                    dict.set_item("peer", from.to_full())?;
+                    dict.set_item("detail", detail)?;
+                }
+            }
+            delivery
+                .event_loop
+                .call_method1(py, "call_soon_threadsafe", (&delivery.callback, dict))?;
+            Ok(())
+        });
+        match delivered {
+            Some(Ok(())) => {}
+            Some(Err(e)) => tracing::warn!("failed to deliver event to python: {e}"),
             None => return, // interpreter is shutting down
         }
     }

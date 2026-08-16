@@ -10,3 +10,4 @@ build/
 .maturin/
 .coverage
 htmlcov/
+CLAUDE.md

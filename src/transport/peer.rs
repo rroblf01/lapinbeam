@@ -56,6 +56,15 @@ impl PeerHandle {
     pub fn try_send(&self, msg: WireMessage) -> Result<(), SendError> {
         self.tx.try_send(msg).map_err(|_| SendError::Closed)
     }
+
+    /// Whether `other` refers to the same underlying connection as `self`.
+    ///
+    /// Used to tell a stale (superseded) connection apart from the current
+    /// one for a given peer id, so its cleanup does not evict a fresher
+    /// connection that replaced it in the peers map.
+    pub fn is_same_connection(&self, other: &PeerHandle) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
 }
 
 /// Drains the queue and writes framed messages to the socket.

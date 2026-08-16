@@ -33,6 +33,8 @@ class Node:
         self._mailboxes = {}
         self._stopped = None
         self._started = False
+        self._event_listeners = []
+        self._peer_waiters = {}
 
     @staticmethod
     def _build_id(node_name, listen_port):
@@ -58,6 +60,8 @@ class Node:
         self.node_id = self._core.local_id()
         self._stopped = asyncio.Event()
         self._started = True
+        loop = asyncio.get_running_loop()
+        self._core.set_event_handler(loop, self._on_core_event)
         global _current_node
         _current_node = self
 
@@ -68,8 +72,20 @@ class Node:
             self._core = None
         self._mailboxes.clear()
         self._started = False
+        for waiters in self._peer_waiters.values():
+            for fut in waiters:
+                if not fut.done():
+                    fut.set_exception(ConnectionError("node stopped while connecting"))
+        self._peer_waiters.clear()
         if self._stopped is not None:
             self._stopped.set()
+
+    async def __aenter__(self):
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.stop()
 
     async def wait_until_stopped(self):
         """Blocks until `stop()` is called."""
@@ -77,17 +93,54 @@ class Node:
             return
         await self._stopped.wait()
 
+    def on_event(self, callback):
+        """Registers `callback(event: dict)` for system events.
+
+        `event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`
+        or `"error"` (a peer reported a delivery failure, e.g. sending to an
+        unknown remote actor); `event["peer"]` is the peer's full id, and
+        `event["detail"]` carries the error message for `"error"` events.
+        Without a registered handler these events are otherwise invisible —
+        message delivery is fire-and-forget.
+        """
+        self._event_listeners.append(callback)
+
+    def _on_core_event(self, event):
+        if event.get("kind") == "peer_connected":
+            waiters = self._peer_waiters.get(event.get("peer"))
+            if waiters:
+                for fut in waiters:
+                    if not fut.done():
+                        fut.set_result(None)
+        for callback in list(self._event_listeners):
+            callback(event)
+
     async def connect_peer(self, peer_id):
         """Connects to a peer and waits until the handshake completes."""
         if self._core is None:
             raise RuntimeError("node has not been started")
         self._core.connect_peer(peer_id)
+        if self._core.has_peer(peer_id):
+            return
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._connect_timeout
-        while not self._core.has_peer(peer_id):
-            if loop.time() > deadline:
-                raise ConnectionError(f"failed to connect to peer {peer_id!r}")
-            await asyncio.sleep(0.01)
+        fut = loop.create_future()
+        self._peer_waiters.setdefault(peer_id, []).append(fut)
+        try:
+            # Re-check after registering the waiter: closes the race where
+            # the connection completes between the check above and this
+            # point, since PeerConnected would otherwise fire with no one
+            # listening yet.
+            if self._core.has_peer(peer_id):
+                return
+            await asyncio.wait_for(fut, timeout=self._connect_timeout)
+        except asyncio.TimeoutError:
+            raise ConnectionError(f"failed to connect to peer {peer_id!r}") from None
+        finally:
+            waiters = self._peer_waiters.get(peer_id)
+            if waiters and fut in waiters:
+                waiters.remove(fut)
+                if not waiters:
+                    self._peer_waiters.pop(peer_id, None)
 
     def has_peer(self, peer_id):
         """Whether `peer_id` is currently connected."""
