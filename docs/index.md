@@ -49,22 +49,42 @@ want both in the same system.
 
 ## Security
 
-lapinbeam's transport has **no authentication and no encryption** today: the
-handshake a peer sends on connecting is simply *believed* — a `NodeId` is
-whatever string the other end claims, with nothing to verify it — and all
-traffic travels as plain, unencrypted TCP. Any process that can reach a
-node's listening port can complete a handshake, claim to be any peer id, and
-send it messages.
+lapinbeam's transport has **no encryption**: all traffic travels as plain
+TCP, readable by anyone who can observe the network path. It does have a
+lightweight, opt-in **shared-secret handshake check**:
 
-This is a deliberate, known trade-off for an early-stage project, not an
-oversight — it's the same trust posture Erlang's distribution protocol has
-defaulted to for decades (a shared cookie, not real authentication). It's
-fine for a cluster of processes on a network boundary you already trust: a
-private VPC, a single Docker Compose/Kubernetes network, a LAN. It is
+```python
+node = Node("app@0.0.0.0:9001", cluster_secret="a-secret-only-your-cluster-knows")
+```
+
+Every node in the cluster must be started with the *same* `cluster_secret`.
+On connect, the dialer proves it knows the secret (a random nonce plus its
+`HMAC-SHA256`); if the acceptor's secret doesn't produce the same proof, the
+handshake is dropped before the connection is ever registered as a peer —
+an arbitrary process reaching the port can no longer just claim a peer id
+and be believed. Without `cluster_secret` (the default), behavior is
+unchanged: any handshake is accepted, exactly as before.
+
+This is deliberately the same trust model Erlang's distribution protocol
+has used for decades (a shared cluster cookie) — and it has the same
+limits, stated plainly:
+
+- **One-directional.** The dialer proves itself to the acceptor; the
+  acceptor does not prove itself back. A rogue process squatting on a
+  peer's address before the real node starts isn't caught by this.
+- **No encryption, no replay protection.** A network-position attacker who
+  can already observe traffic can capture a valid handshake and replay it
+  later. This closes "any random process can join," not "a passive
+  attacker on the wire can never get in."
+
+It's fine for a cluster of processes on a network boundary you already
+trust — a private VPC, a single Docker Compose/Kubernetes network, a LAN —
+with `cluster_secret` raising the bar further within that boundary. It is
 **not** fine to expose a `Node`'s listening port directly to the open
-internet. If you need that, put lapinbeam behind something that actually
-authenticates and encrypts the link — a VPN, a WireGuard tunnel, an
-mTLS-terminating proxy — rather than relying on the transport itself.
+internet, secret or not. If you need that, put lapinbeam behind something
+that actually authenticates and encrypts the link end to end — a VPN, a
+WireGuard tunnel, an mTLS-terminating proxy — rather than relying on the
+transport itself.
 
 ## Install
 

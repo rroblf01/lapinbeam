@@ -25,10 +25,17 @@ class Node:
     """A distributed node identified by `name@host:port`."""
 
     def __init__(self, node_name, listen_port=None, reconnect_interval=1.0,
-                 connect_timeout=5.0):
+                 connect_timeout=5.0, cluster_secret=None):
+        """`cluster_secret`, when set, must match on every node this one
+        talks to: a handshake that doesn't prove knowledge of the same
+        secret is rejected before ever being registered as a peer. This
+        does not encrypt traffic — see docs/index.md's "Security" section
+        for exactly what it does and doesn't protect against.
+        """
         self.node_id = self._build_id(node_name, listen_port)
         self._reconnect_interval = reconnect_interval
         self._connect_timeout = connect_timeout
+        self._cluster_secret = cluster_secret
         self._core = None
         self._mailboxes = {}
         self._stopped = None
@@ -55,7 +62,7 @@ class Node:
         """Starts the background runtime and binds the listener."""
         if self._started:
             return
-        self._core = _core.Node(self.node_id, self._reconnect_interval)
+        self._core = _core.Node(self.node_id, self._reconnect_interval, self._cluster_secret)
         self._core.start()
         self.node_id = self._core.local_id()
         self._stopped = asyncio.Event()
@@ -96,11 +103,20 @@ class Node:
     def on_event(self, callback):
         """Registers `callback(event: dict)` for system events.
 
-        `event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`
-        or `"error"` (a peer reported a delivery failure, e.g. sending to an
-        unknown remote actor); `event["peer"]` is the peer's full id, and
-        `event["detail"]` carries the error message for `"error"` events.
-        Without a registered handler these events are otherwise invisible —
+        `event["kind"]` is one of:
+
+        - `"peer_connected"` / `"peer_disconnected"` — `event["peer"]` is
+          the peer's full id.
+        - `"error"` — a peer reported a delivery failure (e.g. sending to
+          an unknown remote actor). `event["peer"]` is the peer's full id,
+          `event["detail"]` the error message.
+        - `"decode_error"` — a message for a local actor failed to decode
+          (e.g. a Pydantic `ValidationError`, or a dataclass missing a
+          required field) and was dropped before ever reaching the actor's
+          mailbox. `event["actor"]` is the actor name, `event["detail"]`
+          describes the exception.
+
+        Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.
         """
         self._event_listeners.append(callback)
@@ -158,7 +174,24 @@ class Node:
             raise RuntimeError("node has not been started")
         self._mailboxes[name] = mailbox
         loop = asyncio.get_running_loop()
-        callback = lambda msg: mailbox.put_nowait(codec.decode_payload(msg))  # noqa: E731
+
+        def callback(msg):
+            try:
+                decoded = codec.decode_payload(msg)
+            except Exception as exc:
+                # A malformed/unvalidated payload (e.g. a Pydantic
+                # ValidationError, or a dataclass missing a required field)
+                # must not vanish into asyncio's default "Exception in
+                # callback" log — surface it the same way any other
+                # delivery failure is surfaced, so it's actually observable.
+                self._on_core_event({
+                    "kind": "decode_error",
+                    "actor": name,
+                    "detail": f"{type(exc).__name__}: {exc}",
+                })
+                return
+            mailbox.put_nowait(decoded)
+
         self._core.register_actor(name, loop, callback)
 
     def unregister_actor(self, name):

@@ -1,9 +1,16 @@
 import asyncio
 
 import pytest
+from pydantic import BaseModel
 
 from helpers import wait_until
 from lapinbeam import Node, Supervisor, actor
+from lapinbeam.codec import RESERVED
+
+
+class Metric(BaseModel):
+    name: str
+    value: float
 
 
 def test_actor_decorator_registers_name():
@@ -207,6 +214,41 @@ async def test_on_event_surfaces_peer_connected_and_disconnected():
         await wait_until(lambda: any(e["kind"] == "peer_disconnected" for e in events))
     finally:
         await node_a.stop()
+
+
+async def test_on_event_surfaces_decode_error_instead_of_dropping_silently():
+    events = []
+    received = []
+
+    @actor(name="sink")
+    class Sink:
+        async def receive(self, msg):
+            received.append(msg)
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        node_b.on_event(events.append)
+        Supervisor(node=node_b).spawn(Sink)
+        await node_a.connect_peer(node_b.local_id)
+
+        # Tagged as Metric, but "value" can't be parsed as a float — fails
+        # Pydantic validation on decode, on node_b's side.
+        tag = f"{Metric.__module__}.{Metric.__qualname__}"
+        bad_payload = {RESERVED: tag, "data": {"name": "latency", "value": "not-a-number"}}
+        node_a._core.send_data(node_b.local_id, "sink", bad_payload, None, None)
+
+        await wait_until(lambda: any(e["kind"] == "decode_error" for e in events))
+        error = next(e for e in events if e["kind"] == "decode_error")
+        assert error["actor"] == "sink"
+        assert "ValidationError" in error["detail"]
+        # The malformed message must never reach the actor's mailbox.
+        assert received == []
+    finally:
+        await node_a.stop()
+        await node_b.stop()
 
 
 async def test_auto_reconnect_after_peer_restart():

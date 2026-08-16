@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, watch, RwLock};
 
 use crate::runtime::NodeId;
-use crate::wire::{FrameDecoder, MessageKind, WireMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION};
+use crate::wire::{auth, FrameDecoder, MessageKind, WireMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION};
 
 /// Behaviour knobs of a `Transport`.
 #[derive(Debug, Clone)]
@@ -37,6 +37,13 @@ pub struct TransportConfig {
     pub reconnect: bool,
     /// Delay between reconnection attempts.
     pub reconnect_interval: Duration,
+    /// When set, every outbound handshake proves knowledge of this secret,
+    /// and every inbound handshake must prove the same — otherwise the
+    /// connection is dropped before it's ever registered as a peer. `None`
+    /// (the default) keeps today's open behaviour: any handshake is
+    /// accepted. See `wire::auth` for exactly what this does and doesn't
+    /// protect against.
+    pub cluster_secret: Option<Vec<u8>>,
 }
 
 impl Default for TransportConfig {
@@ -47,6 +54,7 @@ impl Default for TransportConfig {
             peer_queue_capacity: 256,
             reconnect: true,
             reconnect_interval: Duration::from_secs(1),
+            cluster_secret: None,
         }
     }
 }
@@ -187,7 +195,12 @@ impl Transport {
         }
 
         // Announce ourselves; the remote registers us upon reading this frame.
-        let hs = WireMessage::handshake(self.next_msg_id(), self.local.to_full());
+        let hs = match &self.config.cluster_secret {
+            Some(secret) => {
+                WireMessage::handshake_with_auth(self.next_msg_id(), self.local.to_full(), secret)
+            }
+            None => WireMessage::handshake(self.next_msg_id(), self.local.to_full()),
+        };
         let _ = handle.send(hs).await;
 
         let _ = self.events.send(Event::PeerConnected(peer.clone()));
@@ -385,6 +398,18 @@ impl Transport {
                             // dropping `write_half` here closes our side of
                             // the socket.
                             return;
+                        }
+                        if let Some(secret) = &self.config.cluster_secret {
+                            if !auth::verify_proof(secret, &msg.payload) {
+                                // Either no proof was sent (the dialer isn't
+                                // configured with a secret at all) or it
+                                // doesn't match ours. Reject before this
+                                // connection is ever registered as a peer —
+                                // see `wire::auth` for what this does and
+                                // doesn't guarantee.
+                                tracing::warn!(src = %msg.src, "handshake failed authentication, dropping connection");
+                                return;
+                            }
                         }
                         let peer_id = match NodeId::parse(&msg.src) {
                             Ok(id) => id,

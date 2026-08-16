@@ -32,6 +32,7 @@ pub struct Node {
     runtime: Option<tokio::runtime::Runtime>,
     handle: Option<tokio::runtime::Handle>,
     reconnect_interval: Option<std::time::Duration>,
+    cluster_secret: Option<Vec<u8>>,
 }
 
 impl Node {
@@ -47,9 +48,19 @@ impl Node {
 impl Node {
     /// Creates a node bound to `name@host:port`. Port `0` picks an ephemeral
     /// port; call `start()` before use.
+    ///
+    /// `cluster_secret`, when set, must match on every node this one talks
+    /// to: a handshake that doesn't prove knowledge of the same secret is
+    /// rejected before the connection is ever registered as a peer. See
+    /// `wire::auth` (Rust) / the "Security" docs page for exactly what this
+    /// does and doesn't protect against — it is not encryption.
     #[new]
-    #[pyo3(signature = (node_id, reconnect_interval=None))]
-    fn new(node_id: &str, reconnect_interval: Option<f64>) -> PyResult<Self> {
+    #[pyo3(signature = (node_id, reconnect_interval=None, cluster_secret=None))]
+    fn new(
+        node_id: &str,
+        reconnect_interval: Option<f64>,
+        cluster_secret: Option<&str>,
+    ) -> PyResult<Self> {
         let local = NodeId::parse(node_id)
             .map_err(|e| PyValueError::new_err(format!("invalid node id: {e}")))?;
         Ok(Node {
@@ -58,6 +69,7 @@ impl Node {
             runtime: None,
             handle: None,
             reconnect_interval: reconnect_interval.map(std::time::Duration::from_secs_f64),
+            cluster_secret: cluster_secret.map(|s| s.as_bytes().to_vec()),
         })
     }
 
@@ -82,12 +94,12 @@ impl Node {
             .map_err(|e| PyRuntimeError::new_err(format!("failed to start runtime: {e}")))?;
 
         let local = self.local.clone();
-        let config = match self.reconnect_interval {
-            Some(interval) => TransportConfig {
-                reconnect_interval: interval,
-                ..Default::default()
-            },
-            None => TransportConfig::default(),
+        let config = TransportConfig {
+            reconnect_interval: self
+                .reconnect_interval
+                .unwrap_or(TransportConfig::default().reconnect_interval),
+            cluster_secret: self.cluster_secret.clone(),
+            ..Default::default()
         };
         let transport = py
             .detach(|| runtime.block_on(Transport::listen(local, config)))

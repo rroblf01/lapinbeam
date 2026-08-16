@@ -211,14 +211,19 @@ def on_event(event):
         print("peer perdido:", event["peer"])
     elif event["kind"] == "error":
         print("error de entrega desde", event["peer"], ":", event["detail"])
+    elif event["kind"] == "decode_error":
+        print("mensaje inválido para", event["actor"], ":", event["detail"])
 
 node.on_event(on_event)
 ```
 
-`event["kind"]` es uno de `"peer_connected"`, `"peer_disconnected"` o
-`"error"` — este último se dispara cuando un peer reporta un fallo de
-entrega, p.ej. un mensaje enviado a un nombre de actor que no existe en el
-nodo remoto.
+`event["kind"]` es uno de `"peer_connected"`, `"peer_disconnected"`,
+`"error"` (un peer reportó un fallo de entrega, p.ej. un mensaje enviado a
+un nombre de actor que no existe en el nodo remoto), o `"decode_error"` (un
+mensaje para un actor local no se pudo decodificar — p.ej. un
+`ValidationError` de Pydantic sobre un payload mal formado — y se descartó
+antes de llegar a la mailbox de ese actor, en vez de perderse en una línea
+de log de asyncio sin relación aparente).
 
 Siguiente: [Mensajes tipados](typed-messages.md) para enviar tipos reales de
 Python en vez de dicts, o [Benchmarks](benchmarks.md) para saber cuánto

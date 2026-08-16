@@ -2,6 +2,7 @@
 //!
 //! On the wire every frame is `[u32 LE length][bincode(WireMessage)]`.
 
+pub mod auth;
 pub mod framing;
 
 pub use framing::{encode_frame, FrameDecoder, FrameError};
@@ -94,6 +95,16 @@ impl WireMessage {
             payload: Vec::new(),
             reply_to: None,
             correlation_id: None,
+        }
+    }
+
+    /// Builds the connection handshake announcing `src`, carrying an
+    /// [`auth::build_proof`] payload proving knowledge of a shared cluster
+    /// secret. See `wire::auth` for what this does and doesn't guarantee.
+    pub fn handshake_with_auth(msg_id: u64, src: impl Into<String>, secret: &[u8]) -> Self {
+        WireMessage {
+            payload: auth::build_proof(secret),
+            ..Self::handshake(msg_id, src)
         }
     }
 

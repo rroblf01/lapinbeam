@@ -30,6 +30,13 @@ fn reconnect_config() -> TransportConfig {
     }
 }
 
+fn secured_config(secret: &[u8]) -> TransportConfig {
+    TransportConfig {
+        cluster_secret: Some(secret.to_vec()),
+        ..fast_config()
+    }
+}
+
 async fn wait_until<F, Fut>(mut cond: F)
 where
     F: FnMut() -> Fut,
@@ -240,6 +247,102 @@ async fn protocol_version_mismatch_drops_connection() {
         .expect("connection was not closed after a protocol version mismatch")
         .expect("read error");
     assert_eq!(n, 0, "expected EOF after a protocol version mismatch");
+}
+
+#[tokio::test]
+async fn matching_cluster_secret_connects_normally() {
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        secured_config(b"the-shared-secret"),
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(
+        NodeId::parse("node_b@127.0.0.1:0").unwrap(),
+        secured_config(b"the-shared-secret"),
+    )
+    .await
+    .unwrap();
+
+    let (tx_b, mut rx_b) = mpsc::channel(16);
+    node_b.register_actor("sink".into(), tx_b).await;
+
+    node_a.connect(node_b.local_id()).await.unwrap();
+    wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
+
+    node_a
+        .send_data(&node_b.local_id(), "sink", json!({"ok": true}), None, None)
+        .await
+        .unwrap();
+    let msg = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+        .await
+        .expect("message never arrived despite matching secrets")
+        .expect("mailbox closed");
+    assert_eq!(msg.payload_json().unwrap(), json!({"ok": true}));
+}
+
+#[tokio::test]
+async fn mismatched_cluster_secret_rejects_connection() {
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        secured_config(b"node-a-secret"),
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(
+        NodeId::parse("node_b@127.0.0.1:0").unwrap(),
+        secured_config(b"a-completely-different-secret"),
+    )
+    .await
+    .unwrap();
+
+    // node_a dials with its own (wrong, from node_b's point of view) proof.
+    // `connect()` itself succeeds (the TCP connection opens fine, and it
+    // has no way to know the handshake will be rejected) — the rejection
+    // happens on node_b's side, silently from node_a's perspective, same
+    // as any other unauthenticated peer would be dropped.
+    node_a.connect(node_b.local_id()).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !node_b.has_peer(&node_a.local_id()).await,
+        "node_b must not register a peer whose secret didn't match"
+    );
+    assert!(
+        !node_a.has_peer(&node_b.local_id()).await,
+        "node_a's side of the rejected connection must also be gone"
+    );
+}
+
+#[tokio::test]
+async fn unauthenticated_handshake_rejected_when_secret_required() {
+    // A raw client that never proves knowledge of the secret at all (as
+    // opposed to proving the wrong one) must be rejected the same way.
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        secured_config(b"the-shared-secret"),
+    )
+    .await
+    .unwrap();
+
+    let mut sock = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
+    let plain_handshake = WireMessage::handshake(1, "ghost@127.0.0.1:9999");
+    sock.write_all(&encode_frame(&plain_handshake).unwrap())
+        .await
+        .unwrap();
+
+    let ghost = NodeId::parse("ghost@127.0.0.1:9999").unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!node_a.has_peer(&ghost).await);
+
+    let mut buf = [0u8; 8];
+    let n = tokio::time::timeout(Duration::from_millis(500), sock.read(&mut buf))
+        .await
+        .expect("connection was not closed after failing authentication")
+        .expect("read error");
+    assert_eq!(n, 0, "expected EOF after a failed authentication attempt");
 }
 
 #[tokio::test]

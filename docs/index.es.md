@@ -50,23 +50,44 @@ quieras los dos en el mismo sistema.
 
 ## Seguridad
 
-El transporte de lapinbeam hoy **no tiene autenticación ni cifrado**: el
-handshake que envía un peer al conectarse simplemente se *cree* — un
-`NodeId` es cualquier cadena que el otro extremo afirme ser, sin nada que lo
-verifique —, y todo el tráfico viaja como TCP plano, sin cifrar. Cualquier
-proceso que alcance el puerto de escucha de un nodo puede completar el
-handshake, hacerse pasar por cualquier id de peer, y enviarle mensajes.
+El transporte de lapinbeam **no cifra** nada: todo el tráfico viaja como TCP
+plano, legible por cualquiera que pueda observar la red. Sí tiene una
+**comprobación de handshake con secreto compartido**, ligera y opcional:
 
-Es un trade-off deliberado y conocido para un proyecto en etapa temprana, no
-un descuido — es la misma postura de confianza que ha tenido por defecto la
-distribución de Erlang durante décadas (una cookie compartida, no
-autenticación real). Está bien para un clúster de procesos dentro de un
-límite de red en el que ya confías: una VPC privada, una única red de
-Docker Compose/Kubernetes, una LAN. **No** está bien exponer el puerto de
-escucha de un `Node` directamente a internet abierto. Si necesitas eso, pon
-lapinbeam detrás de algo que realmente autentique y cifre el enlace — una
-VPN, un túnel WireGuard, un proxy que termine mTLS — en vez de confiar en el
-propio transporte.
+```python
+node = Node("app@0.0.0.0:9001", cluster_secret="un-secreto-que-solo-conoce-tu-cluster")
+```
+
+Cada nodo del clúster debe arrancar con el *mismo* `cluster_secret`. Al
+conectar, quien marca demuestra que conoce el secreto (un nonce aleatorio
+más su `HMAC-SHA256`); si el secreto de quien acepta no produce la misma
+prueba, el handshake se descarta antes de que la conexión llegue a
+registrarse como peer — un proceso cualquiera que alcance el puerto ya no
+puede simplemente afirmar ser un peer y que se le crea. Sin
+`cluster_secret` (el valor por defecto), el comportamiento es el de
+siempre: se acepta cualquier handshake.
+
+Es deliberadamente el mismo modelo de confianza que ha usado la
+distribución de Erlang durante décadas (una cookie de clúster compartida)
+— y tiene los mismos límites, dichos con claridad:
+
+- **Unidireccional.** Quien marca se demuestra a quien acepta; quien acepta
+  no se demuestra de vuelta. Un proceso impostado en la dirección de un
+  peer antes de que el nodo real arranque no queda cubierto por esto.
+- **Sin cifrado, sin protección contra repetición.** Un atacante con
+  posición en la red que ya pueda observar el tráfico puede capturar un
+  handshake válido y reproducirlo más tarde. Esto cierra "cualquier
+  proceso puede unirse", no "un atacante pasivo en el cable nunca puede
+  entrar".
+
+Está bien para un clúster de procesos dentro de un límite de red en el que
+ya confías — una VPC privada, una única red de Docker Compose/Kubernetes,
+una LAN —, y `cluster_secret` sube el listón dentro de ese límite. **No**
+está bien exponer el puerto de escucha de un `Node` directamente a internet
+abierto, con secreto o sin él. Si necesitas eso, pon lapinbeam detrás de
+algo que realmente autentique y cifre el enlace de extremo a extremo — una
+VPN, un túnel WireGuard, un proxy que termine mTLS — en vez de confiar en
+el propio transporte.
 
 ## Instalación
 

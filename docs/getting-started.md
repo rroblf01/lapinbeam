@@ -207,13 +207,19 @@ def on_event(event):
         print("lost peer:", event["peer"])
     elif event["kind"] == "error":
         print("delivery error from", event["peer"], ":", event["detail"])
+    elif event["kind"] == "decode_error":
+        print("bad message for", event["actor"], ":", event["detail"])
 
 node.on_event(on_event)
 ```
 
-`event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`, or
-`"error"` — the last one fires when a peer reports a delivery failure, e.g. a
-message sent to an actor name that does not exist on the remote node.
+`event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`,
+`"error"` (a peer reported a delivery failure, e.g. a message sent to an
+actor name that does not exist on the remote node), or `"decode_error"` (a
+message for a local actor failed to decode — e.g. a Pydantic
+`ValidationError` on a malformed payload — and was dropped before ever
+reaching that actor's mailbox, instead of vanishing into an unrelated
+asyncio log line).
 
 Next: [Typed messages](typed-messages.md) for sending real Python types
 instead of dicts, or [Benchmarks](benchmarks.md) for what this costs you in
