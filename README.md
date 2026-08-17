@@ -11,7 +11,10 @@ Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.g
 
 ## Status
 
-Alpha. MVP: two-node bidirectional message passing over a multiplexed TCP transport.
+`1.0.0` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+`RemoteRef`, `codec`) is stable; a breaking change now requires a major
+version bump. This hasn't been run at production scale yet — see
+[Limitations](#limitations) below for what it deliberately doesn't do.
 
 ## Features
 

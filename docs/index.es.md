@@ -10,10 +10,12 @@ multiplexado con heartbeats, framing y reconexión automática — está escrita
 en Rust (Tokio) y expuesta mediante PyO3, así que toda la E/S ocurre fuera
 del GIL mientras tus actores siguen siendo simples corrutinas `async def`.
 
-!!! warning "Estado: alpha"
-    El MVP es paso de mensajes bidireccional entre dos nodos sobre una
-    conexión TCP multiplexada. Revisa [Limitaciones](#limitaciones) antes de
-    apostar tráfico de producción a esto.
+!!! info "Estado: 1.0"
+    La API pública (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+    `RemoteRef`, `codec`) es estable — un cambio incompatible ahora requiere
+    subir la versión mayor. Todavía no se ha probado a escala de producción,
+    así que revisa [Limitaciones](#limitaciones) antes de apostar tráfico de
+    producción a esto.
 
 ## Por qué existe lapinbeam
 

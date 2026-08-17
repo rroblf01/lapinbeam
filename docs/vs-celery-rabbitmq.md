@@ -3,8 +3,8 @@
 These solve genuinely different problems, so "which is better" is the wrong
 question — the right one is which shape your workload actually has. This
 page is a technical comparison, not a sales pitch: Celery + RabbitMQ is
-mature, production-proven infrastructure, and lapinbeam is an alpha library
-that has not been proven at that scale.
+mature, production-proven infrastructure, and lapinbeam is a young, 1.0
+library that has not been proven at that scale yet.
 
 ## The shape of the problem each one targets
 
@@ -67,8 +67,9 @@ redelivery — if a node is unreachable when you send, the message is gone.
   a different thing entirely from retrying a *failed unit of work*.
 - **Operational maturity.** Flower for monitoring, a decade-plus of
   production usage, a large ecosystem of extensions and integration guides.
-  lapinbeam is alpha: no dashboard, no dedicated ops tooling yet, and its
-  wire protocol has no compatibility guarantees across versions.
+  lapinbeam is young: no dashboard, no dedicated ops tooling yet, and its
+  wire protocol has no compatibility guarantees across versions — 1.0
+  covers the Python API, not the wire format.
 
 ## Practical guidance
 

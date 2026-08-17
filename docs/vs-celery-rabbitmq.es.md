@@ -4,8 +4,8 @@ Estas herramientas resuelven problemas genuinamente distintos, así que
 "cuál es mejor" es la pregunta equivocada — la correcta es qué forma tiene
 realmente tu carga de trabajo. Esta página es una comparación técnica, no
 un argumento de venta: Celery + RabbitMQ es infraestructura madura y
-probada en producción, y lapinbeam es una biblioteca en fase alpha que no
-se ha probado a esa escala.
+probada en producción, y lapinbeam es una biblioteca joven, en su 1.0, que
+todavía no se ha probado a esa escala.
 
 ## La forma del problema que ataca cada uno
 
@@ -76,9 +76,10 @@ momento del envío, el mensaje desaparece.
   *unidad de trabajo que falló*.
 - **Madurez operativa.** Flower para monitorización, más de una década de
   uso en producción, un ecosistema grande de extensiones y guías de
-  integración. lapinbeam está en alpha: sin dashboard, sin herramientas de
+  integración. lapinbeam es joven: sin dashboard, sin herramientas de
   operación dedicadas todavía, y su protocolo de red no tiene garantías de
-  compatibilidad entre versiones.
+  compatibilidad entre versiones — la 1.0 cubre la API de Python, no el
+  formato de red.
 
 ## Recomendación práctica
 

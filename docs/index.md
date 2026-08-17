@@ -10,10 +10,12 @@ framing, and automatic reconnection — is written in Rust (Tokio) and exposed
 through PyO3, so all I/O happens off the GIL while your actors keep running as
 plain `async def` coroutines.
 
-!!! warning "Status: alpha"
-    The MVP is two-node bidirectional message passing over a multiplexed TCP
-    connection. See [Limitations](#limitations) below before betting
-    production traffic on it.
+!!! info "Status: 1.0"
+    The public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+    `RemoteRef`, `codec`) is stable — a breaking change now requires a major
+    version bump. It hasn't been run at production scale yet, so read
+    [Limitations](#limitations) below before betting production traffic on
+    it.
 
 ## Why lapinbeam exists
 

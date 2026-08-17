@@ -3,11 +3,16 @@
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/) —
-while it stays in the `0.x` line (alpha), any release may include breaking
-changes.
+and this project adheres to [Semantic Versioning](https://semver.org/): as
+of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-08-17
+
+Everything below shipped as alpha work-in-progress against the `0.1.0` base
+and is now the first stable release — see `ROADMAP.md` for the full
+before/after story of how this repository got here.
 
 ### Performance
 
@@ -174,8 +179,8 @@ actual current code rather than trusting existing prose — found and fixed:
 
 - **README.md and CLAUDE.md both claimed simultaneous dial "creates two
   connections (no dedup yet)"** — stale; the deterministic tiebreak (see
-  `[Unreleased] > Added` above) has resolved this to exactly one surviving
-  connection for a while. Both corrected.
+  "Added" above) has resolved this to exactly one surviving connection for
+  a while. Both corrected.
 - **Stale local-send throughput figure.** `README.md` and
   `docs/benchmarks.md`/`.es.md` said "~1.2M msg/s" for `lapinbeam local
   send"; re-running `bench/bench_remote.py` (3x, for stability) measures
@@ -199,6 +204,12 @@ actual current code rather than trusting existing prose — found and fixed:
   or `docker-compose.restart.yml`** (both added earlier in this session)
   at all — added a section covering both, alongside the original
   `docker-compose.yml`.
+- **"Alpha" status swept from every doc page** (`README.md`, `CLAUDE.md`,
+  `docs/index.md`/`.es.md`, `docs/vs-celery-rabbitmq.md`/`.es.md`) as part
+  of cutting this release — replaced with "1.0, stable API" framing that
+  still honestly says this hasn't run at production scale yet, rather than
+  either leaving a stale "alpha" label or overclaiming production-proven
+  maturity it hasn't earned.
 
 ### CI/CD
 
@@ -278,5 +289,6 @@ Initial release.
 
 See `ROADMAP.md` for what's planned before `1.0.0`.
 
-[Unreleased]: https://github.com/rroblf01/lapinbeam/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rroblf01/lapinbeam/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/rroblf01/lapinbeam/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/rroblf01/lapinbeam/releases/tag/v0.1.0
