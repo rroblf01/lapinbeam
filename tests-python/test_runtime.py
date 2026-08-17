@@ -305,3 +305,57 @@ async def test_auto_reconnect_after_peer_restart():
     finally:
         await node_a.stop()
         await node_b.stop()
+
+
+async def test_forget_peer_drops_connection_and_stops_reconnecting():
+    node_a = Node("node_a@127.0.0.1:0", reconnect_interval=0.03)
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        await node_a.connect_peer(node_b.local_id)
+        assert node_a.has_peer(node_b.local_id)
+
+        node_a.forget_peer(node_b.local_id)
+        assert not node_a.has_peer(node_b.local_id)
+
+        # node_b is still alive and reachable — if node_a still considered
+        # it desired, the fast reconnect_interval would reconnect almost
+        # immediately. It must not, since we explicitly forgot it.
+        await asyncio.sleep(0.2)
+        assert not node_a.has_peer(node_b.local_id)
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_on_event_surfaces_reconnect_gave_up():
+    events = []
+
+    node_a = Node(
+        "node_a@127.0.0.1:0",
+        reconnect_interval=0.03,
+        reconnect_max_attempts=3,
+    )
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    node_a.on_event(events.append)
+    try:
+        await node_a.connect_peer(node_b.local_id)
+        assert node_a.has_peer(node_b.local_id)
+
+        # node_b goes away for good — every reconnect attempt after this
+        # fails outright, so node_a must give up after 3 attempts instead
+        # of retrying forever.
+        await node_b.stop()
+
+        await wait_until(lambda: any(e["kind"] == "reconnect_gave_up" for e in events))
+        gave_up = next(e for e in events if e["kind"] == "reconnect_gave_up")
+        assert gave_up["peer"] == node_b.local_id
+
+        # Given up for good: waiting longer must not bring it back.
+        await asyncio.sleep(0.2)
+        assert not node_a.has_peer(node_b.local_id)
+    finally:
+        await node_a.stop()

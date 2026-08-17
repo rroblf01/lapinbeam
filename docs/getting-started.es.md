@@ -213,17 +213,25 @@ def on_event(event):
         print("error de entrega desde", event["peer"], ":", event["detail"])
     elif event["kind"] == "decode_error":
         print("mensaje inválido para", event["actor"], ":", event["detail"])
+    elif event["kind"] == "reconnect_gave_up":
+        print("dejando de reintentar con:", event["peer"])
 
 node.on_event(on_event)
 ```
 
 `event["kind"]` es uno de `"peer_connected"`, `"peer_disconnected"`,
 `"error"` (un peer reportó un fallo de entrega, p.ej. un mensaje enviado a
-un nombre de actor que no existe en el nodo remoto), o `"decode_error"` (un
+un nombre de actor que no existe en el nodo remoto), `"decode_error"` (un
 mensaje para un actor local no se pudo decodificar — p.ej. un
 `ValidationError` de Pydantic sobre un payload mal formado — y se descartó
 antes de llegar a la mailbox de ese actor, en vez de perderse en una línea
-de log de asyncio sin relación aparente).
+de log de asyncio sin relación aparente), o `"reconnect_gave_up"` (la
+reconexión automática a `event["peer"]` se abandonó tras
+`reconnect_max_attempts` intentos fallidos — ya no se reintenta ni se
+sigue rastreando, así que no queda ninguna fuga; llama a `connect_peer()`
+de nuevo si quieres reintentarlo). Si ya sabes que no necesitas más un
+peer, llama a `node.forget_peer(peer_id)` en vez de esperar a que esto
+pase solo.
 
 Siguiente: [Mensajes tipados](typed-messages.md) para enviar tipos reales de
 Python en vez de dicts, o [Benchmarks](benchmarks.md) para saber cuánto

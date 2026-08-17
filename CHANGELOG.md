@@ -57,11 +57,24 @@ changes.
   instead of leaking a wasted duplicate.
 - `RUST_LOG`-aware `tracing_subscriber` installed in `Node.start()` — every
   internal `tracing::warn!`/`debug!` call was previously a complete no-op.
+- **`Node(..., reconnect_max_attempts=30)`** and **`Node.forget_peer(peer_id)`**
+  — see "Fixed" below for the leak this closes.
 
 ### Fixed
 
 - `Transport::shutdown()` no longer resurrects a connection whose handshake
   was still being processed concurrently with the shutdown call.
+- **Unbounded reconnect leak.** A peer marked *desired* (by `connect_peer`)
+  was never removed from that set except on full `shutdown()` — so a peer
+  that goes away for good used to trigger an unconditional retry-forever
+  loop (one `connect()` attempt every `reconnect_interval`, by default
+  every second, forever) and permanently grow the desired-peers set for
+  the life of the process. Reconnection now gives up after
+  `reconnect_max_attempts` (default 30) consecutive failures, removes the
+  peer from the desired set at that point, and fires
+  `on_event(kind="reconnect_gave_up")`. `Node.forget_peer(peer_id)` gives
+  an application that already knows it's done with a peer a way to clean
+  up immediately instead of waiting for that to happen on its own.
 
 ### CI/CD
 

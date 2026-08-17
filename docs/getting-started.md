@@ -209,17 +209,24 @@ def on_event(event):
         print("delivery error from", event["peer"], ":", event["detail"])
     elif event["kind"] == "decode_error":
         print("bad message for", event["actor"], ":", event["detail"])
+    elif event["kind"] == "reconnect_gave_up":
+        print("giving up on peer:", event["peer"])
 
 node.on_event(on_event)
 ```
 
 `event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`,
 `"error"` (a peer reported a delivery failure, e.g. a message sent to an
-actor name that does not exist on the remote node), or `"decode_error"` (a
+actor name that does not exist on the remote node), `"decode_error"` (a
 message for a local actor failed to decode — e.g. a Pydantic
 `ValidationError` on a malformed payload — and was dropped before ever
 reaching that actor's mailbox, instead of vanishing into an unrelated
-asyncio log line).
+asyncio log line), or `"reconnect_gave_up"` (automatic reconnection to
+`event["peer"]` was abandoned after `reconnect_max_attempts` failed
+attempts — it's no longer retried or tracked, so it's not a leak left
+behind; call `connect_peer()` again if you want to retry). If you already
+know you're done with a peer, call `node.forget_peer(peer_id)` instead of
+waiting for that to happen on its own.
 
 Next: [Typed messages](typed-messages.md) for sending real Python types
 instead of dicts, or [Benchmarks](benchmarks.md) for what this costs you in

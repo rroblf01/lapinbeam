@@ -32,6 +32,7 @@ pub struct Node {
     runtime: Option<tokio::runtime::Runtime>,
     handle: Option<tokio::runtime::Handle>,
     reconnect_interval: Option<std::time::Duration>,
+    reconnect_max_attempts: Option<u32>,
     cluster_secret: Option<Vec<u8>>,
 }
 
@@ -54,11 +55,19 @@ impl Node {
     /// rejected before the connection is ever registered as a peer. See
     /// `wire::auth` (Rust) / the "Security" docs page for exactly what this
     /// does and doesn't protect against — it is not encryption.
+    ///
+    /// `reconnect_max_attempts` bounds how many times a dropped desired
+    /// peer is retried before giving up (see `on_event`'s
+    /// `"reconnect_gave_up"` and `forget_peer`) — pass `None` explicitly
+    /// for the old retry-forever behaviour, which for a peer that's gone
+    /// for good is an unbounded background task hammering `connect()`
+    /// forever.
     #[new]
-    #[pyo3(signature = (node_id, reconnect_interval=None, cluster_secret=None))]
+    #[pyo3(signature = (node_id, reconnect_interval=None, reconnect_max_attempts=30, cluster_secret=None))]
     fn new(
         node_id: &str,
         reconnect_interval: Option<f64>,
+        reconnect_max_attempts: Option<u32>,
         cluster_secret: Option<&str>,
     ) -> PyResult<Self> {
         let local = NodeId::parse(node_id)
@@ -69,6 +78,7 @@ impl Node {
             runtime: None,
             handle: None,
             reconnect_interval: reconnect_interval.map(std::time::Duration::from_secs_f64),
+            reconnect_max_attempts,
             cluster_secret: cluster_secret.map(|s| s.as_bytes().to_vec()),
         })
     }
@@ -98,6 +108,7 @@ impl Node {
             reconnect_interval: self
                 .reconnect_interval
                 .unwrap_or(TransportConfig::default().reconnect_interval),
+            reconnect_max_attempts: self.reconnect_max_attempts,
             cluster_secret: self.cluster_secret.clone(),
             ..Default::default()
         };
@@ -137,6 +148,18 @@ impl Node {
         handle.spawn(async move {
             let _ = transport.connect(peer).await;
         });
+        Ok(())
+    }
+
+    /// Stops treating `peer_id` as desired (no further auto-reconnect
+    /// attempts) and drops the connection now if one is currently open.
+    /// Use this once you know you're done with a peer, instead of waiting
+    /// for the automatic give-up after repeated failed reconnects.
+    fn forget_peer(&mut self, py: Python<'_>, peer_id: &str) -> PyResult<()> {
+        let peer = NodeId::parse(peer_id)
+            .map_err(|e| PyValueError::new_err(format!("invalid peer id: {e}")))?;
+        let (transport, handle) = self.require()?;
+        py.detach(|| handle.block_on(transport.forget_peer(&peer)));
         Ok(())
     }
 
@@ -305,6 +328,10 @@ async fn event_drain_loop(mut events: broadcast::Receiver<Event>, delivery: Deli
                     dict.set_item("kind", "error")?;
                     dict.set_item("peer", from.to_full())?;
                     dict.set_item("detail", detail)?;
+                }
+                Event::ReconnectGaveUp(peer) => {
+                    dict.set_item("kind", "reconnect_gave_up")?;
+                    dict.set_item("peer", peer.to_full())?;
                 }
             }
             delivery.event_loop.call_method1(

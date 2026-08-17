@@ -661,3 +661,75 @@ async fn reconnects_to_desired_peer() {
 
     let _ = node_b2;
 }
+
+#[tokio::test]
+async fn reconnect_gives_up_after_max_attempts() {
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        TransportConfig {
+            reconnect_interval: Duration::from_millis(30),
+            reconnect_max_attempts: Some(3),
+            ..fast_config()
+        },
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let b_id = node_b.local_id();
+
+    node_a.connect(b_id.clone()).await.unwrap();
+    wait_until(|| async { node_a.has_peer(&b_id).await }).await;
+
+    // Node B goes away for good — nothing will ever answer at this address
+    // again, so every reconnect attempt after this fails outright.
+    let events = node_a.event_stream();
+    node_b.shutdown().await;
+
+    match wait_for_event(events, |ev| matches!(ev, Event::ReconnectGaveUp(_))).await {
+        Event::ReconnectGaveUp(pid) => assert_eq!(pid, b_id),
+        other => panic!("expected ReconnectGaveUp, got {other:?}"),
+    }
+
+    // Given up for good: waiting longer must not bring it back, and it
+    // must no longer be tracked as desired (that's the actual leak fix —
+    // checked indirectly here since `desired` isn't exposed directly).
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!node_a.has_peer(&b_id).await);
+}
+
+#[tokio::test]
+async fn forget_peer_drops_connection_and_stops_reconnecting() {
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        TransportConfig {
+            reconnect_interval: Duration::from_millis(30),
+            ..fast_config()
+        },
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let b_id = node_b.local_id();
+
+    node_a.connect(b_id.clone()).await.unwrap();
+    wait_until(|| async { node_a.has_peer(&b_id).await }).await;
+
+    node_a.forget_peer(&b_id).await;
+    assert!(
+        !node_a.has_peer(&b_id).await,
+        "forget_peer should drop the live connection immediately"
+    );
+
+    // node_b is still alive and reachable — if node_a still considered it
+    // desired, the fast reconnect_interval would reconnect almost
+    // immediately. It must not, since we explicitly forgot it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !node_a.has_peer(&b_id).await,
+        "a forgotten peer must not be auto-reconnected"
+    );
+}

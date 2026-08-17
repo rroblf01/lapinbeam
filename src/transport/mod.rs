@@ -37,6 +37,15 @@ pub struct TransportConfig {
     pub reconnect: bool,
     /// Delay between reconnection attempts.
     pub reconnect_interval: Duration,
+    /// Give up reconnecting to a peer after this many consecutive failed
+    /// attempts: the peer is dropped from the *desired* set (so it stops
+    /// being retried, and stops being retained in memory) and
+    /// `Event::ReconnectGaveUp` fires. `None` retries forever — which,
+    /// for a peer that is gone for good, means an unbounded background
+    /// task hammering `connect()` on every `reconnect_interval` forever.
+    /// To try again later, call `connect()` (or `Node.connect_peer()`)
+    /// again to re-declare the peer as desired.
+    pub reconnect_max_attempts: Option<u32>,
     /// When set, every outbound handshake proves knowledge of this secret,
     /// and every inbound handshake must prove the same — otherwise the
     /// connection is dropped before it's ever registered as a peer. `None`
@@ -54,6 +63,7 @@ impl Default for TransportConfig {
             peer_queue_capacity: 256,
             reconnect: true,
             reconnect_interval: Duration::from_secs(1),
+            reconnect_max_attempts: Some(30),
             cluster_secret: None,
         }
     }
@@ -69,6 +79,11 @@ pub enum Event {
         from: NodeId,
         detail: String,
     },
+    /// Reconnection to this peer was abandoned after
+    /// `TransportConfig::reconnect_max_attempts` failed attempts; it has
+    /// been dropped from the desired-peers set. Call `connect()` again to
+    /// retry.
+    ReconnectGaveUp(NodeId),
 }
 
 /// Inbound mailbox: messages for a local actor land here.
@@ -219,6 +234,19 @@ impl Transport {
             async move { t.heartbeat_loop(hb_peer).await }
         });
         Ok(())
+    }
+
+    /// Stops treating `peer` as desired — no further auto-reconnect
+    /// attempts — and, if currently connected, drops that connection now
+    /// instead of leaving it open. The counterpart to `connect()` for a
+    /// caller that already knows it's done with a peer, rather than
+    /// waiting for `reconnect_max_attempts` to be exhausted on its own.
+    pub async fn forget_peer(&self, peer: &NodeId) {
+        self.desired.write().await.remove(peer);
+        let removed = self.peers.write().await.remove(peer);
+        if removed.is_some() {
+            let _ = self.events.send(Event::PeerDisconnected(peer.clone()));
+        }
     }
 
     /// Gracefully stops the transport: stops accepting, clears desired peers
@@ -509,8 +537,13 @@ impl Transport {
         }
     }
 
-    /// Retries `connect` until the desired peer is reachable again.
+    /// Retries `connect` until the desired peer is reachable again, giving
+    /// up after `TransportConfig::reconnect_max_attempts` consecutive
+    /// failures — see that field's docs for why retrying forever is a real
+    /// leak (an eternal background task per permanently-gone peer), not
+    /// just a theoretical one.
     async fn reconnect_loop(&self, peer: NodeId) {
+        let mut attempts: u32 = 0;
         loop {
             tokio::time::sleep(self.config.reconnect_interval).await;
             if !self.desired.read().await.contains(&peer) {
@@ -528,6 +561,15 @@ impl Transport {
                 Ok(Ok(())) => return,
                 Ok(Err(e)) => tracing::debug!(%e, peer = %peer.to_full(), "reconnect failed"),
                 Err(_) => tracing::debug!(peer = %peer.to_full(), "reconnect timed out"),
+            }
+            attempts += 1;
+            if let Some(max) = self.config.reconnect_max_attempts {
+                if attempts >= max {
+                    self.desired.write().await.remove(&peer);
+                    tracing::debug!(peer = %peer.to_full(), attempts, "giving up on reconnecting");
+                    let _ = self.events.send(Event::ReconnectGaveUp(peer));
+                    return;
+                }
             }
         }
     }

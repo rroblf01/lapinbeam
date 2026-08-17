@@ -25,15 +25,24 @@ class Node:
     """A distributed node identified by `name@host:port`."""
 
     def __init__(self, node_name, listen_port=None, reconnect_interval=1.0,
-                 connect_timeout=5.0, cluster_secret=None):
+                 connect_timeout=5.0, cluster_secret=None,
+                 reconnect_max_attempts=30):
         """`cluster_secret`, when set, must match on every node this one
         talks to: a handshake that doesn't prove knowledge of the same
         secret is rejected before ever being registered as a peer. This
         does not encrypt traffic — see docs/index.md's "Security" section
         for exactly what it does and doesn't protect against.
+
+        `reconnect_max_attempts` bounds how many times a dropped desired
+        peer is retried before giving up (see `on_event`'s
+        `"reconnect_gave_up"` and `forget_peer`). Pass `None` explicitly
+        for the old retry-forever behaviour — for a peer that's gone for
+        good, that means an unbounded background task hammering
+        `connect_peer` forever.
         """
         self.node_id = self._build_id(node_name, listen_port)
         self._reconnect_interval = reconnect_interval
+        self._reconnect_max_attempts = reconnect_max_attempts
         self._connect_timeout = connect_timeout
         self._cluster_secret = cluster_secret
         self._core = None
@@ -62,7 +71,12 @@ class Node:
         """Starts the background runtime and binds the listener."""
         if self._started:
             return
-        self._core = _core.Node(self.node_id, self._reconnect_interval, self._cluster_secret)
+        self._core = _core.Node(
+            self.node_id,
+            reconnect_interval=self._reconnect_interval,
+            reconnect_max_attempts=self._reconnect_max_attempts,
+            cluster_secret=self._cluster_secret,
+        )
         self._core.start()
         self.node_id = self._core.local_id()
         self._stopped = asyncio.Event()
@@ -115,6 +129,10 @@ class Node:
           required field) and was dropped before ever reaching the actor's
           mailbox. `event["actor"]` is the actor name, `event["detail"]`
           describes the exception.
+        - `"reconnect_gave_up"` — automatic reconnection to `event["peer"]`
+          was abandoned after repeated failures; it's no longer retried.
+          Call `connect_peer()` again to retry, or don't — either way, the
+          peer is no longer tracked, so this isn't a leak left behind.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.
@@ -157,6 +175,17 @@ class Node:
                 waiters.remove(fut)
                 if not waiters:
                     self._peer_waiters.pop(peer_id, None)
+
+    def forget_peer(self, peer_id):
+        """Stops treating `peer_id` as desired and drops it now if connected.
+
+        Call this once you know you're done with a peer, instead of
+        waiting for automatic reconnection to give up on its own after
+        repeated failures (see `on_event`'s `"reconnect_gave_up"`).
+        """
+        if self._core is None:
+            raise RuntimeError("node has not been started")
+        self._core.forget_peer(peer_id)
 
     def has_peer(self, peer_id):
         """Whether `peer_id` is currently connected."""
