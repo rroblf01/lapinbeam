@@ -239,6 +239,8 @@ def on_event(event):
         print("giving up on peer:", event["peer"])
     elif event["kind"] == "supervisor_gave_up":
         print("actor stopped for good:", event["actor"], ":", event["detail"])
+    elif event["kind"] == "mailbox_full":
+        print("dropped a message for:", event["actor"])
 
 node.on_event(on_event)
 ```
@@ -257,9 +259,35 @@ behind; call `connect_peer()` again if you want to retry), or
 `"supervisor_gave_up"` (a `Supervisor` stopped restarting `event["actor"]`
 after too many crashes within its restart window — including a crash in the
 actor's own `__init__`, not only its `receive`/`@on` handlers — and it is
-no longer running). If you already know you're done with a peer, call
-`node.forget_peer(peer_id)` instead of waiting for that to happen on its
-own.
+no longer running), or `"mailbox_full"` (a message for `event["actor"]` was
+dropped because its mailbox was full — only possible if that actor's
+`Node` was created with `mailbox_capacity` set; unbounded by default, see
+[Limitations](index.md#limitations)). If you already know you're done with
+a peer, call `node.forget_peer(peer_id)` instead of waiting for that to
+happen on its own.
+
+## Tuning failure detection and backpressure
+
+`Node(...)` takes a few more knobs beyond what's shown above, all optional
+and all defaulting to today's behavior if left unset:
+
+```python
+node = Node(
+    "app@127.0.0.1:0",
+    heartbeat_interval=1.0,     # how often to ping each peer
+    peer_timeout=3.0,           # drop a peer that's sent nothing for this long
+    peer_queue_capacity=256,    # outbound frames buffered per peer
+    mailbox_capacity=None,      # cap per-actor mailbox size; None = unbounded
+)
+```
+
+`heartbeat_interval`/`peer_timeout` control how quickly a silently-dead peer
+is noticed — shortening `peer_timeout` without also shortening
+`heartbeat_interval` on *both* sides will false-positive on ordinary network
+jitter. `peer_queue_capacity` bounds how many outbound frames can be queued
+for a peer whose TCP write is congested. `mailbox_capacity` is the one
+that changes default behavior in a real way once set — see
+`"mailbox_full"` above.
 
 Next: [Typed messages](typed-messages.md) for sending real Python types
 instead of dicts, or [Benchmarks](benchmarks.md) for what this costs you in

@@ -74,6 +74,21 @@ changes.
   below.
 - `Node.peer_count()`: the number of currently connected peers. Existed in
   the Rust binding since the MVP but was never exposed on the Python `Node`.
+- **`Node(..., heartbeat_interval=, peer_timeout=, peer_queue_capacity=)`**:
+  these already existed as `TransportConfig` fields but were hardcoded
+  (1s / 3s / 256) with no way to tune them from Python. `None` (the
+  default for each) keeps exactly today's values.
+- **`Node(..., mailbox_capacity=N)`**: caps how many undelivered messages
+  an actor's mailbox can hold. `None` (the default) keeps today's
+  unbounded behavior. Once set, a full mailbox drops new messages instead
+  of growing forever — see "Fixed" below — firing
+  `on_event(kind="mailbox_full")`, and for a dropped *remote* send, an
+  `"error"` event on the sender too (`detail` starts with
+  `"mailbox_full:"`, `correlation_id` echoed as usual).
+- New `docker-compose.secure.yml` (two containers with a matching
+  `cluster_secret`) and `docker-compose.restart.yml` (kills and restarts
+  one container mid-stream, verifying the other reconnects and resumes
+  delivery) E2E fixtures, each with a matching CI job — see "CI/CD" below.
 
 ### Fixed
 
@@ -109,6 +124,18 @@ changes.
   exhausting restarts (for either kind of crash) now also fires
   `on_event(kind="supervisor_gave_up")` in addition to the pre-existing
   behavior of raising through `ActorRef.task`.
+- **Unbounded mailbox growth under a slow or stuck actor**, found during
+  the same audit as the reconnect leak above, in two places: (1) the
+  per-actor `asyncio.Queue()` (Python) had no size limit at all; (2) the
+  Rust-side channel between the transport and Python, when full, spawned
+  a new task blocked on `.send().await` *per message* instead of applying
+  any real limit — proven by the test that already relied on this
+  (`slow_mailbox_does_not_block_other_traffic`). Fixed independently at
+  both layers: the Rust channel now drops the message (and notifies, see
+  `Event::MailboxFull` / `on_event`) instead of spawning an unbounded
+  blocked task; the Python queue is boundable via the new
+  `mailbox_capacity` (above), with the same drop-and-notify behavior once
+  set. Both default to unchanged behavior unless configured.
 
 ### CI/CD
 
@@ -127,6 +154,18 @@ changes.
   `publish.yml` builds and smoke-tests real wheels for all four platform
   targets (Linux manylinux, macOS x86_64/aarch64, Windows x64) before
   publishing, instead of only Linux. Not yet confirmed by an actual CI run.
+- **Two new E2E jobs**, closing a gap where the only E2E coverage was a
+  single happy-path run: `docker-e2e-secure` runs the same 100-ACK check
+  as `docker-e2e` but with a matching `cluster_secret` on both containers
+  (previously `cluster_secret` was only exercised in-process, never
+  between two real separate processes); `docker-e2e-restart` kills and
+  restarts node_b's container mid-stream and checks node_a's log climbs
+  back up close to the full count afterward (not an exact match — message
+  loss during the outage is expected, see Limitations — but a frozen
+  count would mean reconnection never actually happened). Both verified
+  locally with real `docker compose` runs (including a real mismatched-
+  secret rejection) before being wired into CI, same as every other
+  Docker-dependent claim in this changelog.
 
 ## [0.1.0] - 2026-08-16
 

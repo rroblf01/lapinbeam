@@ -19,6 +19,6 @@ WORKDIR /app
 COPY --from=builder /build/dist/*.whl .
 RUN pip install --no-cache-dir *.whl && rm *.whl
 
-COPY examples/app_node_a.py examples/app_node_b.py .
+COPY examples/*.py .
 
 CMD ["python", "app_node_a.py"]

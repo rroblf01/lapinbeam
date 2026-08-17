@@ -40,7 +40,7 @@ class Supervisor:
         name = actor_name(actor_cls)
         # Register the mailbox synchronously so sends can land immediately,
         # even though the watcher task only runs on the next loop iteration.
-        mailbox = asyncio.Queue()
+        mailbox = asyncio.Queue(maxsize=node.mailbox_capacity or 0)
         node.register_actor(name, mailbox)
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._watch(node, name, actor_cls, args, kwargs, mailbox))
@@ -63,7 +63,7 @@ class Supervisor:
                 # unconditionally rather than gated on how far this
                 # iteration got.
                 instance = actor_cls(*args, **kwargs)
-                mailbox = mailbox or asyncio.Queue()
+                mailbox = mailbox or asyncio.Queue(maxsize=node.mailbox_capacity or 0)
                 node.register_actor(name, mailbox)
                 driver = asyncio.create_task(self._drive(instance, mailbox))
                 await driver

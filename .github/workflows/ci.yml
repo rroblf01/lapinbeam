@@ -186,3 +186,66 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down
+
+  docker-e2e-secure:
+    name: docker compose e2e (cluster_secret)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build images
+        run: docker compose -f docker-compose.secure.yml build
+      - name: Start two-node cluster with a matching cluster_secret
+        run: docker compose -f docker-compose.secure.yml up -d
+      - name: Verify 100/100 ACKs in node_a logs
+        run: |
+          for i in $(seq 1 60); do
+            if docker logs lapinbeam_secure_node_a 2>&1 | grep -q "Total: 100"; then
+              echo "E2E OK: node_a received 100 ACKs with cluster_secret set"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "E2E FAILED: node_a did not receive 100 ACKs"
+          docker logs lapinbeam_secure_node_a
+          docker logs lapinbeam_secure_node_b
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.secure.yml down
+
+  docker-e2e-restart:
+    name: docker compose e2e (peer restart)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build images
+        run: docker compose -f docker-compose.restart.yml build
+      - name: Start two-node cluster
+        run: docker compose -f docker-compose.restart.yml up -d
+      - name: Let node_a make some early progress
+        run: sleep 5
+      - name: Restart node_b mid-stream
+        run: docker compose -f docker-compose.restart.yml restart node_b
+      - name: Verify node_a reconnects and delivery resumes
+        run: |
+          # Message loss during the outage window is expected (no
+          # at-least-once delivery — see docs/index.md's Limitations), so
+          # this checks for substantial recovery, not an exact count: if
+          # node_a never reconnected, progress would freeze wherever it was
+          # when node_b's container went down instead of climbing back
+          # toward the full 40.
+          for i in $(seq 1 60); do
+            total=$(docker logs lapinbeam_restart_node_a 2>&1 | grep -o "Total: [0-9]*" | tail -1 | grep -o "[0-9]*" || echo 0)
+            if [ "$total" -ge 30 ]; then
+              echo "E2E OK: node_a recovered and reached Total: $total after node_b's restart"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "E2E FAILED: node_a did not recover after node_b's restart"
+          docker logs lapinbeam_restart_node_a
+          docker logs lapinbeam_restart_node_b
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.restart.yml down

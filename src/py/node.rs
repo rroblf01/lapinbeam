@@ -34,6 +34,9 @@ pub struct Node {
     reconnect_interval: Option<std::time::Duration>,
     reconnect_max_attempts: Option<u32>,
     cluster_secret: Option<Vec<u8>>,
+    heartbeat_interval: Option<std::time::Duration>,
+    peer_timeout: Option<std::time::Duration>,
+    peer_queue_capacity: Option<usize>,
 }
 
 impl Node {
@@ -62,13 +65,36 @@ impl Node {
     /// for the old retry-forever behaviour, which for a peer that's gone
     /// for good is an unbounded background task hammering `connect()`
     /// forever.
+    ///
+    /// `heartbeat_interval` and `peer_timeout` control failure detection: a
+    /// peer that sends nothing for `peer_timeout` is dropped. `None` for
+    /// either keeps `TransportConfig::default()` (1s / 3s). `peer_timeout`
+    /// shorter than a couple of heartbeat intervals will false-positive on
+    /// ordinary jitter.
+    ///
+    /// `peer_queue_capacity` bounds the outbound queue kept per peer — a
+    /// peer whose TCP write is congested can only have this many frames
+    /// buffered for it before `send()` starts failing. `None` keeps the
+    /// default of 256.
     #[new]
-    #[pyo3(signature = (node_id, reconnect_interval=None, reconnect_max_attempts=30, cluster_secret=None))]
+    #[pyo3(signature = (
+        node_id,
+        reconnect_interval=None,
+        reconnect_max_attempts=30,
+        cluster_secret=None,
+        heartbeat_interval=None,
+        peer_timeout=None,
+        peer_queue_capacity=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         node_id: &str,
         reconnect_interval: Option<f64>,
         reconnect_max_attempts: Option<u32>,
         cluster_secret: Option<&str>,
+        heartbeat_interval: Option<f64>,
+        peer_timeout: Option<f64>,
+        peer_queue_capacity: Option<usize>,
     ) -> PyResult<Self> {
         let local = NodeId::parse(node_id)
             .map_err(|e| PyValueError::new_err(format!("invalid node id: {e}")))?;
@@ -80,6 +106,9 @@ impl Node {
             reconnect_interval: reconnect_interval.map(std::time::Duration::from_secs_f64),
             reconnect_max_attempts,
             cluster_secret: cluster_secret.map(|s| s.as_bytes().to_vec()),
+            heartbeat_interval: heartbeat_interval.map(std::time::Duration::from_secs_f64),
+            peer_timeout: peer_timeout.map(std::time::Duration::from_secs_f64),
+            peer_queue_capacity,
         })
     }
 
@@ -104,13 +133,21 @@ impl Node {
             .map_err(|e| PyRuntimeError::new_err(format!("failed to start runtime: {e}")))?;
 
         let local = self.local.clone();
+        let defaults = TransportConfig::default();
         let config = TransportConfig {
             reconnect_interval: self
                 .reconnect_interval
-                .unwrap_or(TransportConfig::default().reconnect_interval),
+                .unwrap_or(defaults.reconnect_interval),
             reconnect_max_attempts: self.reconnect_max_attempts,
             cluster_secret: self.cluster_secret.clone(),
-            ..Default::default()
+            heartbeat_interval: self
+                .heartbeat_interval
+                .unwrap_or(defaults.heartbeat_interval),
+            peer_timeout: self.peer_timeout.unwrap_or(defaults.peer_timeout),
+            peer_queue_capacity: self
+                .peer_queue_capacity
+                .unwrap_or(defaults.peer_queue_capacity),
+            ..defaults
         };
         let transport = py
             .detach(|| runtime.block_on(Transport::listen(local, config)))
@@ -271,6 +308,30 @@ impl Node {
         .map_err(|e| PyValueError::new_err(format!("send failed: {e}")))?;
         Ok(())
     }
+
+    /// Tells `peer_id` that a send of theirs failed, the same way an
+    /// unknown-actor send does — used by the Python side to report a
+    /// message dropped by a full `asyncio.Queue` mailbox, which happens
+    /// downstream of anything this transport itself can see. Best-effort:
+    /// silently does nothing if `peer_id` isn't connected.
+    fn notify_peer_error(
+        &mut self,
+        py: Python<'_>,
+        peer_id: &str,
+        detail: &str,
+        correlation_id: Option<u64>,
+    ) -> PyResult<()> {
+        let peer = NodeId::parse(peer_id)
+            .map_err(|e| PyValueError::new_err(format!("invalid peer id: {e}")))?;
+        let (transport, handle) = self.require()?;
+        let detail = detail.to_string();
+        py.detach(|| {
+            handle.block_on(async move {
+                let _ = transport.send_error(&peer, detail, correlation_id).await;
+            });
+        });
+        Ok(())
+    }
 }
 
 impl Drop for Node {
@@ -344,6 +405,10 @@ async fn event_drain_loop(mut events: broadcast::Receiver<Event>, delivery: Deli
                 Event::ReconnectGaveUp(peer) => {
                     dict.set_item("kind", "reconnect_gave_up")?;
                     dict.set_item("peer", peer.to_full())?;
+                }
+                Event::MailboxFull { actor } => {
+                    dict.set_item("kind", "mailbox_full")?;
+                    dict.set_item("actor", actor)?;
                 }
             }
             delivery.event_loop.call_method1(

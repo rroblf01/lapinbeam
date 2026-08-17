@@ -481,3 +481,131 @@ async def test_on_event_surfaces_supervisor_gave_up():
         assert "nope" in gave_up["detail"]
     finally:
         await node.stop()
+
+
+def test_node_mailbox_capacity_defaults_to_unbounded():
+    assert Node("node@127.0.0.1:0").mailbox_capacity is None
+
+
+async def test_local_mailbox_capacity_drops_and_fires_event():
+    events = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @actor(name="stuck")
+    class Stuck:
+        async def receive(self, msg):
+            started.set()
+            await release.wait()
+
+    node = Node("node@127.0.0.1:0", mailbox_capacity=2)
+    await node.start()
+    node.on_event(events.append)
+    try:
+        ref = Supervisor(node=node).spawn(Stuck)
+        await ref.send({"n": 0})
+        await started.wait()  # mailbox is now empty; "stuck" is blocked in receive()
+
+        # Capacity is 2: the next two fit, the third must be dropped.
+        await ref.send({"n": 1})
+        await ref.send({"n": 2})
+        await ref.send({"n": 3})
+
+        await wait_until(lambda: any(e["kind"] == "mailbox_full" for e in events))
+        full = next(e for e in events if e["kind"] == "mailbox_full")
+        assert full["actor"] == "stuck"
+    finally:
+        release.set()
+        await node.stop()
+
+
+async def test_remote_mailbox_capacity_drops_and_notifies_both_sides():
+    events_a = []
+    events_b = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @actor(name="stuck")
+    class Stuck:
+        async def receive(self, msg):
+            started.set()
+            await release.wait()
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0", mailbox_capacity=1)
+    await node_a.start()
+    await node_b.start()
+    node_a.on_event(events_a.append)
+    node_b.on_event(events_b.append)
+    try:
+        Supervisor(node=node_b).spawn(Stuck)
+        await node_a.connect_peer(node_b.local_id)
+        remote = node_a.get_remote_actor(node_b.local_id, "stuck")
+
+        await remote.send({"n": 0})
+        await started.wait()  # mailbox is now empty; "stuck" is blocked in receive()
+
+        # Capacity is 1 and delivery is ordered (single TCP connection): the
+        # next send fills it, the one after that must be dropped.
+        await remote.send({"n": 1})
+        await remote.send({"n": 2}, correlation_id=77)
+
+        # The node whose actor overflowed sees it locally...
+        await wait_until(lambda: any(e["kind"] == "mailbox_full" for e in events_b))
+        full = next(e for e in events_b if e["kind"] == "mailbox_full")
+        assert full["actor"] == "stuck"
+
+        # ...and the sender is told its send failed, same as any other
+        # delivery error, correlation_id and all.
+        await wait_until(lambda: any(e["kind"] == "error" for e in events_a))
+        error = next(e for e in events_a if e["kind"] == "error")
+        assert "mailbox_full" in error["detail"]
+        assert error["correlation_id"] == 77
+    finally:
+        release.set()
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_custom_peer_timeout_disconnects_silent_peer_faster():
+    # Both nodes keep their default heartbeat_interval (1s) — each side only
+    # hears from the other roughly once a second (a heartbeat, or the reply
+    # it provokes). node_a's peer_timeout is far shorter than that gap, so
+    # node_a must give up on node_b as "silent" well before its own next
+    # heartbeat is even due, and well before the default 3s timeout would —
+    # proving peer_timeout actually reaches the transport instead of being
+    # ignored.
+    node_a = Node("node_a@127.0.0.1:0", peer_timeout=0.15)
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        await node_a.connect_peer(node_b.local_id)
+        assert node_a.has_peer(node_b.local_id)
+        await wait_until(lambda: not node_a.has_peer(node_b.local_id))
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_custom_peer_queue_capacity_does_not_break_normal_delivery():
+    received = []
+
+    @actor(name="sink")
+    class Sink:
+        async def receive(self, msg):
+            received.append(msg)
+
+    node_a = Node("node_a@127.0.0.1:0", peer_queue_capacity=4)
+    node_b = Node("node_b@127.0.0.1:0", peer_queue_capacity=4)
+    await node_a.start()
+    await node_b.start()
+    try:
+        Supervisor(node=node_b).spawn(Sink)
+        await node_a.connect_peer(node_b.local_id)
+        remote = node_a.get_remote_actor(node_b.local_id, "sink")
+        await remote.send({"ok": True})
+        await wait_until(lambda: len(received) == 1)
+    finally:
+        await node_a.stop()
+        await node_b.stop()

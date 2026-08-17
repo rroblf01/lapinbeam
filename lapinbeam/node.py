@@ -27,7 +27,9 @@ class Node:
 
     def __init__(self, node_name, listen_port=None, reconnect_interval=1.0,
                  connect_timeout=5.0, cluster_secret=None,
-                 reconnect_max_attempts=30):
+                 reconnect_max_attempts=30, heartbeat_interval=None,
+                 peer_timeout=None, peer_queue_capacity=None,
+                 mailbox_capacity=None):
         """`cluster_secret`, when set, must match on every node this one
         talks to: a handshake that doesn't prove knowledge of the same
         secret is rejected before ever being registered as a peer. This
@@ -40,12 +42,30 @@ class Node:
         for the old retry-forever behaviour — for a peer that's gone for
         good, that means an unbounded background task hammering
         `connect_peer` forever.
+
+        `heartbeat_interval`/`peer_timeout` (seconds) control failure
+        detection — a peer that sends nothing for `peer_timeout` is
+        dropped. `None` keeps the defaults (1.0 / 3.0). `peer_queue_capacity`
+        bounds the outbound queue kept per peer (default 256); a peer whose
+        TCP write is congested can only have this many frames buffered
+        before sends to it start failing.
+
+        `mailbox_capacity` bounds how many undelivered messages an actor's
+        mailbox can hold before new ones are dropped (with
+        `on_event(kind="mailbox_full")`, and — for a dropped remote send —
+        an `"error"` event back on the sender) instead of piling up
+        forever. `None` (the default) keeps today's unbounded behaviour: an
+        actor that can't keep up will have its mailbox grow without limit.
         """
         self.node_id = self._build_id(node_name, listen_port)
         self._reconnect_interval = reconnect_interval
         self._reconnect_max_attempts = reconnect_max_attempts
         self._connect_timeout = connect_timeout
         self._cluster_secret = cluster_secret
+        self._heartbeat_interval = heartbeat_interval
+        self._peer_timeout = peer_timeout
+        self._peer_queue_capacity = peer_queue_capacity
+        self.mailbox_capacity = mailbox_capacity
         self._core = None
         self._mailboxes = {}
         self._stopped = None
@@ -77,6 +97,9 @@ class Node:
             reconnect_interval=self._reconnect_interval,
             reconnect_max_attempts=self._reconnect_max_attempts,
             cluster_secret=self._cluster_secret,
+            heartbeat_interval=self._heartbeat_interval,
+            peer_timeout=self._peer_timeout,
+            peer_queue_capacity=self._peer_queue_capacity,
         )
         self._core.start()
         self.node_id = self._core.local_id()
@@ -140,6 +163,11 @@ class Node:
           `event["actor"]` after too many crashes within its restart
           window; `event["detail"]` describes the last exception. The
           actor is no longer running and no further restarts will happen.
+        - `"mailbox_full"` — a message for `event["actor"]` on *this* node
+          was dropped because its mailbox was full (only possible if this
+          `Node` was created with `mailbox_capacity` set — unbounded by
+          default). If the dropped message came from a peer, that peer
+          separately gets an `"error"` event for the same drop.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.
@@ -238,7 +266,22 @@ class Node:
                 correlation_id=meta_dict["correlation_id"],
                 msg_id=meta_dict["msg_id"],
             )
-            mailbox.put_nowait((decoded, meta))
+            try:
+                mailbox.put_nowait((decoded, meta))
+            except asyncio.QueueFull:
+                # Only reachable if this Node was created with
+                # mailbox_capacity set — unbounded by default. Dropping (not
+                # blocking the caller) keeps this the same fire-and-forget
+                # shape as every other send, and matches the drop the Rust
+                # side already does if its own internal channel fills up
+                # first. Every message reaching this callback is remote in
+                # origin (local sends never go through it), so the sender
+                # is always reachable to notify, same as any other
+                # delivery failure — best-effort, never raises.
+                self._on_core_event({"kind": "mailbox_full", "actor": name})
+                self._core.notify_peer_error(
+                    meta.src, f"mailbox_full:{name}", meta.correlation_id
+                )
 
         self._core.register_actor(name, loop, callback)
 
@@ -257,7 +300,10 @@ class Node:
             correlation_id=correlation_id,
             msg_id=None,
         )
-        await mailbox.put((msg, meta))
+        try:
+            mailbox.put_nowait((msg, meta))
+        except asyncio.QueueFull:
+            self._on_core_event({"kind": "mailbox_full", "actor": name})
 
     async def _send_remote(self, peer_id, actor_name, msg, reply_to=None, correlation_id=None):
         if self._core is None:

@@ -421,7 +421,10 @@ async fn peer_is_removed_when_connection_closes() {
 #[tokio::test]
 async fn slow_mailbox_does_not_block_other_traffic() {
     // A saturated actor mailbox must not stall the read loop: other actors on
-    // the same connection, and heartbeat replies, must keep flowing.
+    // the same connection, and heartbeat replies, must keep flowing. A full
+    // mailbox drops the message rather than blocking for room — see
+    // `Event::MailboxFull` — which is what actually bounds how much memory a
+    // stuck or merely-slow actor can pin.
     let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
         .await
         .unwrap();
@@ -435,13 +438,14 @@ async fn slow_mailbox_does_not_block_other_traffic() {
     node_b.register_actor("slow".into(), tx_slow).await;
     node_b.register_actor("fast".into(), tx_fast).await;
 
+    let events = node_a.event_stream();
     node_a.connect(node_b.local_id()).await.unwrap();
     wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
 
     // Flood the slow actor well past its mailbox capacity.
     for i in 0..50 {
         node_a
-            .send_data(&node_b.local_id(), "slow", json!({"i": i}), None, None)
+            .send_data(&node_b.local_id(), "slow", json!({"i": i}), None, Some(i))
             .await
             .unwrap();
     }
@@ -456,10 +460,51 @@ async fn slow_mailbox_does_not_block_other_traffic() {
         .expect("mailbox closed");
     assert_eq!(msg.payload_json().unwrap(), json!({"ok": true}));
 
+    // The sender (node_a) is told each dropped send failed, correlation_id
+    // and all, via the same Error-frame mechanism used for an unknown actor.
+    match wait_for_event(events, |ev| matches!(ev, Event::ErrorReceived { .. })).await {
+        Event::ErrorReceived { detail, .. } => {
+            assert!(detail.contains("mailbox_full:slow"), "detail was {detail}");
+        }
+        other => panic!("expected ErrorReceived, got {other:?}"),
+    }
+
     // Heartbeats must also still be flowing on the same connection.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(node_a.has_peer(&node_b.local_id()).await);
     assert!(node_b.has_peer(&node_a.local_id()).await);
+}
+
+#[tokio::test]
+async fn full_mailbox_fires_local_mailbox_full_event() {
+    // The node whose actor mailbox overflowed sees it too — not just the
+    // remote sender — since it's just as relevant to whoever operates that
+    // node regardless of where the flood came from.
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+
+    let (tx_slow, _rx_not_drained) = mpsc::channel(1);
+    node_b.register_actor("slow".into(), tx_slow).await;
+
+    let events_b = node_b.event_stream();
+    node_a.connect(node_b.local_id()).await.unwrap();
+    wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
+
+    for i in 0..10 {
+        node_a
+            .send_data(&node_b.local_id(), "slow", json!({"i": i}), None, None)
+            .await
+            .unwrap();
+    }
+
+    match wait_for_event(events_b, |ev| matches!(ev, Event::MailboxFull { .. })).await {
+        Event::MailboxFull { actor } => assert_eq!(actor, "slow"),
+        other => panic!("expected MailboxFull, got {other:?}"),
+    }
 }
 
 #[tokio::test]

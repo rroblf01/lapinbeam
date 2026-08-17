@@ -114,6 +114,12 @@ Continúa con [Primeros pasos](getting-started.md).
   [lapinbeam frente a Celery + RabbitMQ](vs-celery-rabbitmq.md) para lo que
   esto implica en la práctica.
 - Los payloads mayores de 16 MiB se rechazan en el emisor.
+- Los mailboxes de los actores no tienen límite por defecto: un actor que no
+  da abasto con su ritmo de entrada hace que su mailbox crezca sin límite
+  en vez de aplicar backpressure. Pasa `Node(..., mailbox_capacity=N)` para
+  acotarlo — un mailbox lleno descarta los mensajes nuevos en su lugar,
+  disparando `on_event(kind="mailbox_full")` (y, si el envío descartado era
+  remoto, un evento `"error"` en el emisor).
 
 ## Licencia
 

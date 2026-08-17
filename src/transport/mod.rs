@@ -89,6 +89,14 @@ pub enum Event {
     /// been dropped from the desired-peers set. Call `connect()` again to
     /// retry.
     ReconnectGaveUp(NodeId),
+    /// A message for `actor` on this node was dropped because its mailbox
+    /// was full — the actor isn't consuming messages fast enough (or is
+    /// stuck). If the message came from a peer, that peer also gets an
+    /// `Error` frame back (`"mailbox_full:{actor}"`), surfaced as its own
+    /// `Event::ErrorReceived`.
+    MailboxFull {
+        actor: String,
+    },
 }
 
 /// Inbound mailbox: messages for a local actor land here.
@@ -314,8 +322,12 @@ impl Transport {
         handle.send(msg).await
     }
 
-    /// Sends an `Error` frame back to a peer.
-    async fn send_error(
+    /// Sends an `Error` frame back to a peer — e.g. to tell a remote sender
+    /// its message was dropped, whether that happened here in the
+    /// transport (an unknown actor, or this node's internal delivery
+    /// channel being full) or downstream of it, once Python had the
+    /// message (its own mailbox being full — see `Node.notify_peer_error`).
+    pub async fn send_error(
         &self,
         peer: &NodeId,
         detail: String,
@@ -594,16 +606,25 @@ impl Transport {
                 let mailbox = self.routing.read().await.get(&msg.dst_actor).cloned();
                 match mailbox {
                     Some(mailbox) => {
-                        // Non-blocking first: a full mailbox must never stall
-                        // this read loop, since that would also delay heartbeat
-                        // replies and other actors' frames on this connection.
-                        // Tokio's bounded-channel permits are granted in FIFO
-                        // order, so handing the send off to its own task still
-                        // preserves per-actor message ordering.
-                        if let Err(mpsc::error::TrySendError::Full(msg)) = mailbox.try_send(msg) {
-                            tokio::spawn(async move {
-                                let _ = mailbox.send(msg).await;
+                        // Non-blocking: a full mailbox must never stall this
+                        // read loop, since that would also delay heartbeat
+                        // replies and other actors' frames on this
+                        // connection. Unlike blocking until there's room,
+                        // dropping the message caps how much memory a stuck
+                        // or merely-slow actor can pin — see
+                        // `slow_mailbox_does_not_block_other_traffic` and
+                        // `Event::MailboxFull`.
+                        if let Err(mpsc::error::TrySendError::Full(full_msg)) =
+                            mailbox.try_send(msg)
+                        {
+                            let dst_actor = full_msg.dst_actor;
+                            let _ = self.events.send(Event::MailboxFull {
+                                actor: dst_actor.clone(),
                             });
+                            let detail = format!("mailbox_full:{dst_actor}");
+                            let _ = self
+                                .send_error(&from, detail, full_msg.correlation_id)
+                                .await;
                         }
                     }
                     None => {

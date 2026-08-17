@@ -111,6 +111,12 @@ Continue with [Getting started](getting-started.md).
   [lapinbeam vs. Celery + RabbitMQ](vs-celery-rabbitmq.md) for what that
   means in practice.
 - Payloads larger than 16 MiB are rejected on the sender.
+- Actor mailboxes are unbounded by default: an actor that can't keep up with
+  its inbound rate has its mailbox grow without limit instead of applying
+  backpressure. Pass `Node(..., mailbox_capacity=N)` to cap it — a full
+  mailbox then drops new messages instead, firing
+  `on_event(kind="mailbox_full")` (and, for a dropped remote send, an
+  `"error"` event back on the sender).
 
 ## License
 

@@ -245,6 +245,8 @@ def on_event(event):
         print("dejando de reintentar con:", event["peer"])
     elif event["kind"] == "supervisor_gave_up":
         print("actor detenido definitivamente:", event["actor"], ":", event["detail"])
+    elif event["kind"] == "mailbox_full":
+        print("mensaje descartado para:", event["actor"])
 
 node.on_event(on_event)
 ```
@@ -264,8 +266,36 @@ de nuevo si quieres reintentarlo), o `"supervisor_gave_up"` (un
 `Supervisor` dejó de reiniciar `event["actor"]` tras demasiados fallos
 dentro de su ventana de reinicios — incluyendo un fallo en el propio
 `__init__` del actor, no solo en sus handlers `receive`/`@on` — y ya no
-sigue en ejecución). Si ya sabes que no necesitas más un peer, llama a
-`node.forget_peer(peer_id)` en vez de esperar a que esto pase solo.
+sigue en ejecución), o `"mailbox_full"` (se descartó un mensaje para
+`event["actor"]` porque su mailbox estaba lleno — solo posible si el
+`Node` de ese actor se creó con `mailbox_capacity`; sin límite por
+defecto, ver [Limitaciones](index.es.md#limitaciones)). Si ya sabes que no
+necesitas más un peer, llama a `node.forget_peer(peer_id)` en vez de
+esperar a que esto pase solo.
+
+## Ajustar la detección de fallos y el backpressure
+
+`Node(...)` acepta algunos parámetros más además de los ya vistos, todos
+opcionales y con valores por defecto que mantienen el comportamiento
+actual si no se indican:
+
+```python
+node = Node(
+    "app@127.0.0.1:0",
+    heartbeat_interval=1.0,     # cada cuánto hacer ping a cada peer
+    peer_timeout=3.0,           # abandonar un peer que no ha enviado nada en este tiempo
+    peer_queue_capacity=256,    # tramas salientes en cola por peer
+    mailbox_capacity=None,      # límite del mailbox por actor; None = sin límite
+)
+```
+
+`heartbeat_interval`/`peer_timeout` controlan cuán rápido se detecta un
+peer silenciosamente caído — acortar `peer_timeout` sin acortar también
+`heartbeat_interval` en *ambos* lados dará falsos positivos ante el jitter
+normal de la red. `peer_queue_capacity` acota cuántas tramas salientes se
+pueden encolar para un peer cuya escritura TCP está congestionada.
+`mailbox_capacity` es el único que cambia de verdad el comportamiento por
+defecto una vez que se fija — ver `"mailbox_full"` arriba.
 
 Siguiente: [Mensajes tipados](typed-messages.md) para enviar tipos reales de
 Python en vez de dicts, o [Benchmarks](benchmarks.md) para saber cuánto
