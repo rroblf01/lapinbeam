@@ -10,11 +10,16 @@ for request/response — applied to a concrete shape of problem instead of a
 generic example.
 
 !!! note "Illustrative, not a full MCP tutorial"
-    The MCP-specific wiring below (`FastMCP`, `@mcp.tool()`) shows the
-    integration point, not a complete, version-pinned MCP server — consult
-    the [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
-    for that. Everything lapinbeam-specific (`Node`, `Supervisor`, `actor`,
-    `ask`, `current_message`) is the real, current API.
+    The MCP-specific wiring below (`MCPServer`, `@mcp.tool()`) shows the
+    integration point, not a complete MCP server — consult the
+    [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) for
+    that. It was tested against `mcp==2.0.0` (`pip install mcp`, the latest
+    release at the time of writing): registering the tool, listing it, and
+    calling it through `MCPServer`'s own `call_tool` all correctly reach the
+    lapinbeam actor below. On an older pinned `mcp<2.0`, this class was
+    called `FastMCP`, importable from `mcp.server.fastmcp` — the SDK renamed
+    it in 2.0. Everything lapinbeam-specific (`Node`, `Supervisor`, `actor`,
+    `ask`, `current_message`) is the real, current API either way.
 
 ## Dispatching MCP tool calls to specialized workers
 
@@ -76,10 +81,10 @@ The MCP server's tool handler is a thin `ask()` call — the actual work, and
 any process/resource isolation it needs, lives entirely on the worker side:
 
 ```python
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from lapinbeam import Node
 
-mcp = FastMCP("sandbox-gateway")
+mcp = MCPServer("sandbox-gateway")
 node = Node("gateway@10.0.0.1:9100")
 SANDBOX_PEER = "sandbox@10.0.0.5:9101"
 

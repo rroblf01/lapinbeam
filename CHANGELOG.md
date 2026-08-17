@@ -217,7 +217,14 @@ actual current code rather than trusting existing prose — found and fixed:
   specialized worker node (e.g. a code sandbox), and fanning a question out
   concurrently to several LLM-backed "expert" actors and picking the best
   reply (mixture-of-experts). Each has a sequence diagram and a runnable
-  code sample using the real, current API.
+  code sample using the real, current API — actually run, not just written:
+  the mixture-of-experts script runs verbatim; the sandbox example was run
+  as two real `Node`s over a real loopback connection; the MCP-specific
+  wiring was run against a real, freshly-installed `mcp` package. That last
+  one caught a real mistake — `FastMCP`/`mcp.server.fastmcp`, accurate for
+  `mcp<2.0`, was renamed to `MCPServer`/`mcp.server.mcpserver` in the
+  current `mcp==2.0.0` — fixed, with both spellings called out since either
+  could be what a reader has installed.
 
 ### CI/CD
 

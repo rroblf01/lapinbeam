@@ -11,12 +11,17 @@ Pydantic hacen el roundtrip como ellos mismos, no como dicts) y
 forma concreta de problema en vez de un ejemplo genérico.
 
 !!! note "Ilustrativo, no un tutorial completo de MCP"
-    El cableado específico de MCP de abajo (`FastMCP`, `@mcp.tool()`)
-    muestra el punto de integración, no un servidor MCP completo y fijado a
-    una versión — consulta el
-    [SDK de Python de MCP](https://github.com/modelcontextprotocol/python-sdk)
-    para eso. Todo lo específico de lapinbeam (`Node`, `Supervisor`,
-    `actor`, `ask`, `current_message`) es la API real y actual.
+    El cableado específico de MCP de abajo (`MCPServer`, `@mcp.tool()`)
+    muestra el punto de integración, no un servidor MCP completo — consulta
+    el [SDK de Python de MCP](https://github.com/modelcontextprotocol/python-sdk)
+    para eso. Se probó contra `mcp==2.0.0` (`pip install mcp`, la última
+    versión en el momento de escribir esto): registrar la tool, listarla, y
+    llamarla a través del propio `call_tool` de `MCPServer` llegan
+    correctamente al actor de lapinbeam de abajo. Con un `mcp<2.0` fijado,
+    esta clase se llamaba `FastMCP`, importable desde `mcp.server.fastmcp`
+    — el SDK la renombró en la 2.0. Todo lo específico de lapinbeam (`Node`,
+    `Supervisor`, `actor`, `ask`, `current_message`) es la API real y
+    actual en cualquier caso.
 
 ## Despachar tool calls de MCP a workers especializados
 
@@ -80,10 +85,10 @@ trabajo real, y el aislamiento de proceso/recursos que necesite, vive
 enteramente en el lado del worker:
 
 ```python
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from lapinbeam import Node
 
-mcp = FastMCP("sandbox-gateway")
+mcp = MCPServer("sandbox-gateway")
 node = Node("gateway@10.0.0.1:9100")
 SANDBOX_PEER = "sandbox@10.0.0.5:9101"
 
