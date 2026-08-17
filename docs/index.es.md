@@ -106,9 +106,17 @@ Continúa con [Primeros pasos](getting-started.md).
 - Los payloads deben ser compatibles con JSON (dict/list/str/int/float/bool/
   None) — o un modelo `@dataclass`/Pydantic, codificado vía
   `lapinbeam.codec`. Los enteros están limitados a `i64`/`u64`.
+  `__lb_type__` es una clave de payload reservada, usada por el codec que
+  preserva el tipo.
 - La preservación de tipo solo ocurre en envíos **remotos**; los envíos
-  locales pasan el objeto por referencia (sin copia).
-- Los nombres de actor deben ser únicos por nodo.
+  locales pasan el objeto por referencia (sin copia). Un campo Pydantic
+  tipado de forma laxa (p.ej. `Any`) no reconstruye un valor `@dataclass`
+  anidado al decodificar — vuelve como un dict plano; un campo bien tipado
+  (p.ej. `inner: Inner`) sí hace el roundtrip correctamente gracias a la
+  propia validación de Pydantic.
+- Los nombres de actor deben ser únicos por nodo. El dial simultáneo (ambos
+  nodos conectándose entre sí a la vez) se resuelve de forma determinista —
+  sobrevive exactamente una conexión, no dos.
 - No hay persistencia de mensajes ni entrega "at-least-once": un mensaje en
   vuelo durante una partición de red se pierde, no se reintenta. Consulta
   [lapinbeam frente a Celery + RabbitMQ](vs-celery-rabbitmq.md) para lo que

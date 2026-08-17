@@ -167,6 +167,39 @@ changes.
   pattern) — now self-prunes via `add_done_callback` the moment a task
   ends, for any reason.
 
+### Documentation
+
+Audited every doc page (`docs/*.md`, `README.md`, `CLAUDE.md`) against the
+actual current code rather than trusting existing prose — found and fixed:
+
+- **README.md and CLAUDE.md both claimed simultaneous dial "creates two
+  connections (no dedup yet)"** — stale; the deterministic tiebreak (see
+  `[Unreleased] > Added` above) has resolved this to exactly one surviving
+  connection for a while. Both corrected.
+- **Stale local-send throughput figure.** `README.md` and
+  `docs/benchmarks.md`/`.es.md` said "~1.2M msg/s" for `lapinbeam local
+  send"; re-running `bench/bench_remote.py` (3x, for stability) measures
+  ~440K msg/s consistently. Corrected in all three places, along with the
+  dependent "~75x drop" comparison (now ~20x).
+- **`bench/bench_codec.py` was never documented** on `docs/benchmarks.md`/
+  `.es.md`, despite existing, being referenced in `README.md`/`CLAUDE.md`'s
+  command lists, and being the entire subject of this changelog's
+  "Performance" section above. Added a "Codec" section with real numbers
+  from re-running it.
+- **`docs/index.md`'s Limitations list was missing two items** that
+  `README.md`'s equivalent list already had: `__lb_type__` being a reserved
+  payload key, and a Pydantic-nesting caveat — synced into `index.md`/
+  `.es.md`, and tightened based on actually testing the claim: a
+  `@dataclass` nested in a **properly-typed** Pydantic field (e.g.
+  `inner: Inner`) round-trips correctly via Pydantic's own validation; only
+  a loosely-typed field (e.g. `Any`) loses the nested type on decode. The
+  previous blanket "nested dataclass-in-Pydantic fields are not rebuilt"
+  overstated the limitation.
+- **`docs/examples.md`/`.es.md` didn't mention `docker-compose.secure.yml`
+  or `docker-compose.restart.yml`** (both added earlier in this session)
+  at all — added a section covering both, alongside the original
+  `docker-compose.yml`.
+
 ### CI/CD
 
 - `cargo fmt --check`, `cargo clippy -D warnings`, and `mypy lapinbeam/`

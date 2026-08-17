@@ -9,6 +9,7 @@ before making a decision based on them:
 ```bash
 uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # RTT percentiles
+uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -16,8 +17,8 @@ uv run python bench/bench_latency.py  # RTT percentiles
 | Metric | Result |
 | --- | --- |
 | `asyncio.Queue` put/get (baseline, no lapinbeam) | ~1.6M msg/s |
-| lapinbeam local actor send | ~1.2M msg/s |
-| lapinbeam remote send (loopback TCP) | ~16K msg/s |
+| lapinbeam local actor send | ~440K msg/s |
+| lapinbeam remote send (loopback TCP) | ~20K msg/s |
 
 Methodology: `bench_asyncio_queue` measures a bare `asyncio.Queue` with one
 producer and one consumer coroutine as the theoretical ceiling for
@@ -27,10 +28,33 @@ sends to a `RemoteRef` over an already-established loopback TCP connection
 (100 warmup sends + 200ms settle, then timed) — this is fire-and-forget
 throughput, not request/response.
 
-The roughly 75x drop from local to remote send is expected: local sends are
+The roughly 20x drop from local to remote send is expected: local sends are
 zero-copy Python object references into an `asyncio.Queue`; remote sends pay
 for JSON encoding, a bincode-framed write to a real (if loopback) TCP socket,
-and the Rust-side per-peer outbound queue and writer task.
+and the Rust-side per-peer outbound queue and writer task. See "Codec"
+below for where the remote path's own cost is spent.
+
+## Codec (`bench_codec.py`)
+
+Breaks the remote send path down layer by layer — where `full encode` and
+`end-to-end` include everything above them in the table:
+
+| Step | Result |
+| --- | --- |
+| `codec.encode_payload` (Python: dataclass/Pydantic tagging) | ~42K ops/s |
+| `codec.decode_payload` (Python) | ~52K ops/s |
+| `_core.encode_payload` (Rust: PyAny → JSON) | ~5K ops/s |
+| `_core.decode_payload` (Rust: JSON → PyAny) | ~11K ops/s |
+| Full encode (`codec` + `_core`, what `_send_remote` actually does) | ~4.5K ops/s |
+| End-to-end `remote.send()` (fire-and-forget, real loopback connection) | ~2.3K ops/s |
+
+Methodology: 20,000 timed operations per row (200 warmup), on a
+moderately-nested payload — a few scalars, a nested dict, and a list of 20
+nested dicts (see the script for the exact shape). This is heavier than
+`bench_remote.py`'s trivial `{"n": 1}` message, which is why these
+per-operation numbers are lower than the ~20K msg/s throughput figure
+above — the two scripts aren't measuring the same payload, only the same
+code path.
 
 ## Latency (`bench_latency.py`)
 

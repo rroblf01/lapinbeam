@@ -102,10 +102,16 @@ Continue with [Getting started](getting-started.md).
 
 - Payloads must be JSON-compatible (dict/list/str/int/float/bool/None) — or a
   `@dataclass`/Pydantic model, encoded through `lapinbeam.codec`. Ints are
-  limited to `i64`/`u64`.
+  limited to `i64`/`u64`. `__lb_type__` is a reserved payload key, used by
+  the type-preserving codec.
 - Type preservation happens only on **remote** sends; local sends pass the
-  object by reference (zero-copy).
-- Actor names must be unique per node.
+  object by reference (zero-copy). A Pydantic field typed loosely (e.g.
+  `Any`) won't get a nested `@dataclass` value reconstructed on decode — it
+  comes back as a plain dict instead; a properly-typed field (e.g.
+  `inner: Inner`) round-trips fine via Pydantic's own validation.
+- Actor names must be unique per node. Simultaneous dial (both nodes
+  connecting to each other at once) is resolved deterministically — exactly
+  one connection survives, not two.
 - No message persistence and no at-least-once delivery: a message in flight
   during a network partition is lost, not retried. See
   [lapinbeam vs. Celery + RabbitMQ](vs-celery-rabbitmq.md) for what that

@@ -24,6 +24,9 @@ Alpha. MVP: two-node bidirectional message passing over a multiplexed TCP transp
 - Automatic reconnection of desired peers with backoff.
 - Type-preserving payloads: `@dataclass` and Pydantic v2 models round-trip
   between nodes via `lapinbeam.codec`.
+- `ask()` request/response on top of fire-and-forget `send()`, and
+  `on_event()` for connection/delivery/supervisor observability.
+- Optional shared-secret handshake authentication (`cluster_secret`).
 
 ## Install
 
@@ -118,7 +121,7 @@ Measured on this machine (Python 3.14, loopback):
 | Metric | Result |
 | --- | --- |
 | asyncio.Queue put/get | ~1.6M msg/s |
-| lapinbeam local send | ~1.2M msg/s |
+| lapinbeam local send | ~440K msg/s |
 | lapinbeam remote (loopback TCP) throughput | ~16K msg/s |
 | Local dispatch RTT | p50 0.007 ms |
 | Remote loopback TCP RTT (send + ack) | p50 0.44 ms / p99 0.93 ms |
@@ -129,9 +132,14 @@ Measured on this machine (Python 3.14, loopback):
   limited to `i64`/`u64`; larger ints raise `TypeError`.
 - `__lb_type__` is a reserved payload key (used by the type-preserving codecs).
 - Type preservation happens only on **remote** sends; local sends pass the object
-  by reference (zero-copy). Nested dataclass-in-Pydantic fields are not rebuilt.
-- Actor names must be unique per node. If two nodes dial each other at the same
-  time, two connections are created (deduplication not implemented yet).
+  by reference (zero-copy). A Pydantic field typed loosely (e.g. `Any`) won't get
+  a nested `@dataclass` value reconstructed on decode — it comes back as a plain
+  dict instead; a properly-typed field (e.g. `inner: Inner`) round-trips fine via
+  Pydantic's own validation.
+- Actor names must be unique per node. Simultaneous dial (both nodes connecting
+  to each other at once) is resolved deterministically — exactly one connection
+  survives, not two.
+- Actor mailboxes are unbounded by default; see `Node(mailbox_capacity=...)`.
 - Payloads larger than 16 MiB are rejected on the sender.
 
 ## Publishing to PyPI
@@ -151,8 +159,8 @@ src/           Rust core (_core extension module)
 lapinbeam/     Pure-Python layer (@actor, Node, Supervisor, refs)
 tests/         Rust integration tests
 tests-python/  Python tests (pytest)
-examples/      Two-node bidirectional demo
-bench/         Latency benchmarks
+examples/      Two-node bidirectional demo, plus E2E fixtures used by CI
+bench/         Throughput, latency and codec benchmarks
 ```
 
 ## License

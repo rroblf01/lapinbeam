@@ -58,6 +58,26 @@ la IP correcta del contenedor en la red bridge. El pipeline de CI
 (`.github/workflows/ci.yml`) ejecuta exactamente este compose y comprueba
 que los logs de node_a muestren `Total: 100` ACKs antes de tirar todo abajo.
 
+Otros dos ficheros compose en la raíz del repositorio ejercitan la misma
+demo bajo condiciones distintas, cada uno con su propio job de CI:
+
+- **`docker-compose.secure.yml`** — los mismos dos contenedores, pero con
+  una variable de entorno `CLUSTER_SECRET` igual en ambos lados, conectada
+  hasta `Node(..., cluster_secret=...)` (ver
+  [Seguridad](index.es.md#seguridad)). Demuestra que el handshake funciona
+  entre dos procesos de verdad separados, no solo dentro de uno.
+- **`docker-compose.restart.yml`** — una variante de más duración
+  (`examples/e2e_restart_node_a.py` / `e2e_restart_node_b.py`) que envía
+  más despacio, dando a la CI margen para reiniciar el contenedor de
+  node_b a mitad de flujo y confirmar que la reconexión automática de
+  node_a de verdad retoma la entrega después, en vez de solo disparar un
+  evento `"peer_disconnected"` y quedarse callada.
+
+```bash
+docker compose -f docker-compose.secure.yml up --build
+docker compose -f docker-compose.restart.yml up --build
+```
+
 ## Hosts reales y separados
 
 Ver [Primeros pasos](getting-started.md#dos-nodos-hablando-entre-si) para un

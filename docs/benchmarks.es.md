@@ -9,6 +9,7 @@ hardware antes de tomar una decisión basada en ellas:
 ```bash
 uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # percentiles de RTT
+uv run python bench/bench_codec.py    # ruta de codec + conversión JSON, capa a capa
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -16,8 +17,8 @@ uv run python bench/bench_latency.py  # percentiles de RTT
 | Métrica | Resultado |
 | --- | --- |
 | `asyncio.Queue` put/get (línea base, sin lapinbeam) | ~1.6M msg/s |
-| Envío local de actor en lapinbeam | ~1.2M msg/s |
-| Envío remoto en lapinbeam (TCP loopback) | ~16K msg/s |
+| Envío local de actor en lapinbeam | ~440K msg/s |
+| Envío remoto en lapinbeam (TCP loopback) | ~20K msg/s |
 
 Metodología: `bench_asyncio_queue` mide un `asyncio.Queue` puro con una
 corrutina productora y una consumidora como techo teórico para el paso de
@@ -28,11 +29,34 @@ ya establecida (100 envíos de calentamiento + 200ms de asentamiento, luego
 se cronometra) — esto es throughput de disparar-y-olvidar, no de
 petición/respuesta.
 
-La caída de aproximadamente 75x entre envío local y remoto es esperable: los
+La caída de aproximadamente 20x entre envío local y remoto es esperable: los
 envíos locales son referencias a objetos Python sin copia dentro de un
 `asyncio.Queue`; los envíos remotos pagan la codificación JSON, una
 escritura con framing bincode a un socket TCP real (aunque loopback), y la
-cola de salida por peer y la tarea de escritura del lado Rust.
+cola de salida por peer y la tarea de escritura del lado Rust. Ver "Codec"
+más abajo para saber dónde se va el coste propio de la ruta remota.
+
+## Codec (`bench_codec.py`)
+
+Desglosa la ruta de envío remoto capa a capa — donde `full encode` y
+`end-to-end` incluyen todo lo que está por encima en la tabla:
+
+| Paso | Resultado |
+| --- | --- |
+| `codec.encode_payload` (Python: tagging de dataclass/Pydantic) | ~42K ops/s |
+| `codec.decode_payload` (Python) | ~52K ops/s |
+| `_core.encode_payload` (Rust: PyAny → JSON) | ~5K ops/s |
+| `_core.decode_payload` (Rust: JSON → PyAny) | ~11K ops/s |
+| Encode completo (`codec` + `_core`, lo que hace `_send_remote`) | ~4.5K ops/s |
+| `remote.send()` de extremo a extremo (disparar-y-olvidar, conexión loopback real) | ~2.3K ops/s |
+
+Metodología: 20.000 operaciones cronometradas por fila (200 de
+calentamiento), sobre un payload moderadamente anidado — unos escalares,
+un dict anidado, y una lista de 20 dicts anidados (ver el script para la
+forma exacta). Es más pesado que el mensaje trivial `{"n": 1}` de
+`bench_remote.py`, por eso estas cifras por operación son menores que la
+cifra de ~20K msg/s de throughput de arriba — los dos scripts no miden el
+mismo payload, solo la misma ruta de código.
 
 ## Latencia (`bench_latency.py`)
 
