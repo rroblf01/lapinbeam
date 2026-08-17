@@ -178,8 +178,10 @@ impl Node {
     }
 
     /// Registers a local actor mailbox. Inbound messages for `name` are
-    /// scheduled as `callback(message_dict)` on `event_loop` via
-    /// `call_soon_threadsafe`.
+    /// scheduled as `callback(payload, meta_dict)` on `event_loop` via
+    /// `call_soon_threadsafe`. `meta_dict` has `"src"` (sender node id),
+    /// `"reply_to"`, `"correlation_id"` and `"msg_id"` — whatever the
+    /// sender passed to `send_data`, or `None`.
     ///
     /// Blocks (off the GIL) until the routing table update lands, so that by
     /// the time this call returns, remote sends to `name` are guaranteed to
@@ -287,10 +289,15 @@ async fn drain_loop(mut rx: mpsc::Receiver<WireMessage>, delivery: Delivery) {
             // `py::convert::bytes_to_py` for why this skips the
             // `serde_json::Value` step `payload_json()` used to require.
             let obj = convert::bytes_to_py(py, &msg.payload)?;
+            let meta = PyDict::new(py);
+            meta.set_item("src", &msg.src)?;
+            meta.set_item("reply_to", &msg.reply_to)?;
+            meta.set_item("correlation_id", msg.correlation_id)?;
+            meta.set_item("msg_id", msg.msg_id)?;
             delivery.event_loop.call_method1(
                 py,
                 "call_soon_threadsafe",
-                (&delivery.callback, obj),
+                (&delivery.callback, obj, meta),
             )?;
             Ok(())
         });
@@ -324,10 +331,15 @@ async fn event_drain_loop(mut events: broadcast::Receiver<Event>, delivery: Deli
                     dict.set_item("kind", "peer_disconnected")?;
                     dict.set_item("peer", peer.to_full())?;
                 }
-                Event::ErrorReceived { from, detail } => {
+                Event::ErrorReceived {
+                    from,
+                    detail,
+                    correlation_id,
+                } => {
                     dict.set_item("kind", "error")?;
                     dict.set_item("peer", from.to_full())?;
                     dict.set_item("detail", detail)?;
+                    dict.set_item("correlation_id", correlation_id)?;
                 }
                 Event::ReconnectGaveUp(peer) => {
                     dict.set_item("kind", "reconnect_gave_up")?;

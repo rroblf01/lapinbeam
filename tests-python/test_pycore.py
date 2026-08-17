@@ -60,8 +60,11 @@ async def test_two_nodes_message_flow():
     node_b.start()
     try:
         received = []
+        metas = []
         loop = asyncio.get_running_loop()
-        node_b.register_actor("processor", loop, lambda msg: received.append(msg))
+        node_b.register_actor(
+            "processor", loop, lambda msg, meta: (received.append(msg), metas.append(meta))
+        )
 
         node_a.connect_peer(node_b.local_id())
         await wait_until(lambda: node_a.has_peer(node_b.local_id()))
@@ -72,6 +75,10 @@ async def test_two_nodes_message_flow():
         )
         await wait_until(lambda: len(received) == 1)
         assert received[0] == {"type": "TASK", "payload_id": 7}
+        assert metas[0]["src"] == node_a.local_id()
+        assert metas[0]["reply_to"] == "ingestor"
+        assert metas[0]["correlation_id"] == 1
+        assert isinstance(metas[0]["msg_id"], int)
     finally:
         node_a.stop()
         node_b.stop()
@@ -86,8 +93,8 @@ async def test_two_nodes_bidirectional():
         received_a = []
         received_b = []
         loop = asyncio.get_running_loop()
-        node_a.register_actor("ingestor", loop, lambda msg: received_a.append(msg))
-        node_b.register_actor("processor", loop, lambda msg: received_b.append(msg))
+        node_a.register_actor("ingestor", loop, lambda msg, meta: received_a.append(msg))
+        node_b.register_actor("processor", loop, lambda msg, meta: received_b.append(msg))
 
         node_a.connect_peer(node_b.local_id())
         await wait_until(lambda: node_a.has_peer(node_b.local_id()))

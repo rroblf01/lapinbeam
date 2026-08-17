@@ -198,14 +198,19 @@ async fn unknown_actor_triggers_error_frame() {
     wait_until(|| async { node_b.has_peer(&node_a.local_id()).await }).await;
 
     node_a
-        .send_data(&node_b.local_id(), "ghost", json!({"x": 1}), None, None)
+        .send_data(&node_b.local_id(), "ghost", json!({"x": 1}), None, Some(42))
         .await
         .unwrap();
 
     match wait_for_event(events, |ev| matches!(ev, Event::ErrorReceived { .. })).await {
-        Event::ErrorReceived { from, detail } => {
+        Event::ErrorReceived {
+            from,
+            detail,
+            correlation_id,
+        } => {
             assert_eq!(from, node_b.local_id());
             assert!(detail.contains("actor_not_found"), "detail was {detail}");
+            assert_eq!(correlation_id, Some(42));
         }
         other => panic!("expected ErrorReceived, got {other:?}"),
     }

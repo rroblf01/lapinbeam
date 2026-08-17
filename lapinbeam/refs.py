@@ -10,9 +10,15 @@ class ActorRef:
         # Watcher task driving the actor (used by the Supervisor).
         self.task = task
 
-    async def send(self, msg):
-        """Fire-and-forget delivery of `msg` to the local actor."""
-        await self._node._send_local(self.name, msg)
+    async def send(self, msg, reply_to=None, correlation_id=None):
+        """Fire-and-forget delivery of `msg` to the local actor.
+
+        `reply_to`/`correlation_id`, if given, are available to the
+        receiving handler via `lapinbeam.current_message()`.
+        """
+        await self._node._send_local(
+            self.name, msg, reply_to=reply_to, correlation_id=correlation_id
+        )
 
     def __repr__(self):
         return f"<ActorRef {self.name!r} on {self._node.local_id!r}>"
@@ -26,9 +32,17 @@ class RemoteRef:
         self.peer_id = peer_id
         self.actor_name = actor_name
 
-    async def send(self, msg):
-        """Fire-and-forget delivery of `msg` over the wire."""
-        await self._node._send_remote(self.peer_id, self.actor_name, msg)
+    async def send(self, msg, reply_to=None, correlation_id=None):
+        """Fire-and-forget delivery of `msg` over the wire.
+
+        `reply_to`/`correlation_id`, if given, are available to the
+        receiving handler via `lapinbeam.current_message()`; `correlation_id`
+        is also echoed back on the `"error"` event if delivery fails (e.g.
+        the target actor doesn't exist on the remote node).
+        """
+        await self._node._send_remote(
+            self.peer_id, self.actor_name, msg, reply_to=reply_to, correlation_id=correlation_id
+        )
 
     def __repr__(self):
         return f"<RemoteRef {self.actor_name!r} at {self.peer_id!r}>"

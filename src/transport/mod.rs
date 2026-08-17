@@ -78,6 +78,11 @@ pub enum Event {
     ErrorReceived {
         from: NodeId,
         detail: String,
+        /// Echoes the `correlation_id` of the `Data` message that provoked
+        /// this error (e.g. a send to an unknown actor), so a sender that
+        /// tagged its send can match this failure back to it. `None` if the
+        /// original send didn't set one.
+        correlation_id: Option<u64>,
     },
     /// Reconnection to this peer was abandoned after
     /// `TransportConfig::reconnect_max_attempts` failed attempts; it has
@@ -612,7 +617,12 @@ impl Transport {
                     .payload_json()
                     .map(|v| v.to_string())
                     .unwrap_or_default();
-                let _ = self.events.send(Event::ErrorReceived { from, detail });
+                let correlation_id = msg.correlation_id;
+                let _ = self.events.send(Event::ErrorReceived {
+                    from,
+                    detail,
+                    correlation_id,
+                });
             }
         }
     }

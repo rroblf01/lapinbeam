@@ -4,6 +4,7 @@ import asyncio
 import time
 
 from .actor import actor_name
+from .context import current as current_message_var
 from .node import get_current_node
 from .refs import ActorRef
 
@@ -49,11 +50,22 @@ class Supervisor:
     async def _watch(self, node, name, actor_cls, args, kwargs, first_mailbox):
         mailbox = first_mailbox
         while True:
-            instance = actor_cls(*args, **kwargs)
-            mailbox = mailbox or asyncio.Queue()
-            node.register_actor(name, mailbox)
-            driver = asyncio.create_task(self._drive(instance, mailbox))
             try:
+                # Constructing the actor is inside the try/except: a bug in
+                # __init__ (on the first spawn, or on any later restart) must
+                # go through the same restart/backoff/give-up path as a bug
+                # in a handler, instead of silently killing this task with
+                # nothing to show for it but asyncio's generic "exception
+                # was never retrieved" warning. `unregister_actor` below is a
+                # no-op if construction failed before registering anything
+                # this iteration — `spawn()` may have already registered the
+                # mailbox eagerly (see its comment), so it's always called
+                # unconditionally rather than gated on how far this
+                # iteration got.
+                instance = actor_cls(*args, **kwargs)
+                mailbox = mailbox or asyncio.Queue()
+                node.register_actor(name, mailbox)
+                driver = asyncio.create_task(self._drive(instance, mailbox))
                 await driver
             except asyncio.CancelledError:
                 node.unregister_actor(name)
@@ -62,6 +74,11 @@ class Supervisor:
                 node.unregister_actor(name)
                 mailbox = None
                 if not self._allow_restart():
+                    node._on_core_event({
+                        "kind": "supervisor_gave_up",
+                        "actor": name,
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    })
                     raise
                 await asyncio.sleep(self._backoff())
                 continue
@@ -75,17 +92,21 @@ class Supervisor:
         handlers = meta["handlers"]
         default_handler = meta["default_handler"]
         while True:
-            msg = await mailbox.get()
-            if not handlers:
-                await instance.receive(msg)
-                continue
-            handler_name = handlers.get(type(msg), default_handler)
-            if handler_name is None:
-                raise TypeError(
-                    f"{type(instance).__name__} has no @on handler for "
-                    f"{type(msg).__name__} messages and no @on(default=True) fallback"
-                )
-            await getattr(instance, handler_name)(msg)
+            msg, msg_meta = await mailbox.get()
+            token = current_message_var.set(msg_meta)
+            try:
+                if not handlers:
+                    await instance.receive(msg)
+                    continue
+                handler_name = handlers.get(type(msg), default_handler)
+                if handler_name is None:
+                    raise TypeError(
+                        f"{type(instance).__name__} has no @on handler for "
+                        f"{type(msg).__name__} messages and no @on(default=True) fallback"
+                    )
+                await getattr(instance, handler_name)(msg)
+            finally:
+                current_message_var.reset(token)
 
     def _allow_restart(self):
         now = time.monotonic()

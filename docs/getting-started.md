@@ -184,6 +184,31 @@ from the environment the same way, but there's no branching logic anywhere
 — each file only ever plays one role, matching `examples/app_node_a.py` and
 `examples/app_node_b.py` exactly.
 
+`Processor` above gets `peer_id` injected through its constructor because
+that's the only way it can know which node to reply to. If a handler would
+rather find that out from the message itself instead of relying on a
+constructor argument, `lapinbeam.current_message()` returns it directly:
+
+```python
+from lapinbeam import current_message
+
+async def receive(self, msg):
+    if msg.get("type") == "TASK":
+        meta = current_message()  # who sent this, and to what?
+        remote = self.node.get_remote_actor(meta.src, meta.reply_to)
+        await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
+```
+
+`current_message()` returns a `MessageMeta(src, reply_to, correlation_id,
+msg_id)` — populated from whatever the sender passed to `send()` — for as
+long as the handler coroutine that received `msg` is running, and `None`
+outside of one (e.g. from a background task an actor spawned itself). For a
+message sent by a local actor, `src` is this node's own id, and `msg_id` is
+always `None` (it's a per-connection id the transport assigns to remote
+messages only). `reply_to` and `correlation_id` are `None` unless the sender
+set them: `await ref.send(msg, reply_to="ingestor", correlation_id=7)`, on
+both `ActorRef` and `RemoteRef`.
+
 Run them as two separate processes (see
 [Examples](examples.md) for running this across containers or real hosts
 instead of `127.0.0.1`):
@@ -206,27 +231,35 @@ def on_event(event):
     if event["kind"] == "peer_disconnected":
         print("lost peer:", event["peer"])
     elif event["kind"] == "error":
-        print("delivery error from", event["peer"], ":", event["detail"])
+        print("delivery error from", event["peer"], ":", event["detail"],
+              "correlation_id:", event["correlation_id"])
     elif event["kind"] == "decode_error":
         print("bad message for", event["actor"], ":", event["detail"])
     elif event["kind"] == "reconnect_gave_up":
         print("giving up on peer:", event["peer"])
+    elif event["kind"] == "supervisor_gave_up":
+        print("actor stopped for good:", event["actor"], ":", event["detail"])
 
 node.on_event(on_event)
 ```
 
 `event["kind"]` is one of `"peer_connected"`, `"peer_disconnected"`,
 `"error"` (a peer reported a delivery failure, e.g. a message sent to an
-actor name that does not exist on the remote node), `"decode_error"` (a
-message for a local actor failed to decode — e.g. a Pydantic
-`ValidationError` on a malformed payload — and was dropped before ever
-reaching that actor's mailbox, instead of vanishing into an unrelated
-asyncio log line), or `"reconnect_gave_up"` (automatic reconnection to
+actor name that does not exist on the remote node — `event["correlation_id"]`
+echoes whatever the failed `send()` was tagged with, or `None`),
+`"decode_error"` (a message for a local actor failed to decode — e.g. a
+Pydantic `ValidationError` on a malformed payload — and was dropped before
+ever reaching that actor's mailbox, instead of vanishing into an unrelated
+asyncio log line), `"reconnect_gave_up"` (automatic reconnection to
 `event["peer"]` was abandoned after `reconnect_max_attempts` failed
 attempts — it's no longer retried or tracked, so it's not a leak left
-behind; call `connect_peer()` again if you want to retry). If you already
-know you're done with a peer, call `node.forget_peer(peer_id)` instead of
-waiting for that to happen on its own.
+behind; call `connect_peer()` again if you want to retry), or
+`"supervisor_gave_up"` (a `Supervisor` stopped restarting `event["actor"]`
+after too many crashes within its restart window — including a crash in the
+actor's own `__init__`, not only its `receive`/`@on` handlers — and it is
+no longer running). If you already know you're done with a peer, call
+`node.forget_peer(peer_id)` instead of waiting for that to happen on its
+own.
 
 Next: [Typed messages](typed-messages.md) for sending real Python types
 instead of dicts, or [Benchmarks](benchmarks.md) for what this costs you in

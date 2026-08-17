@@ -1,6 +1,7 @@
 from ._core import __version__
 from .actor import actor, on
 from .codec import decode_payload, encode_payload, register_codec
+from .context import MessageMeta, current_message
 from .node import Node
 from .refs import ActorRef, RemoteRef
 from .supervisor import Supervisor
@@ -16,4 +17,6 @@ __all__ = [
     "encode_payload",
     "decode_payload",
     "register_codec",
+    "MessageMeta",
+    "current_message",
 ]

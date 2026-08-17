@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from helpers import wait_until
-from lapinbeam import Node, Supervisor, actor
+from lapinbeam import Node, Supervisor, actor, current_message
 from lapinbeam.codec import RESERVED
 
 
@@ -189,11 +189,12 @@ async def test_on_event_surfaces_actor_not_found_error():
         node_a.on_event(events.append)
         await node_a.connect_peer(node_b.local_id)
         remote = node_a.get_remote_actor(node_b.local_id, "no_such_actor")
-        await remote.send({"type": "TASK"})
+        await remote.send({"type": "TASK"}, correlation_id=99)
         await wait_until(lambda: any(e["kind"] == "error" for e in events))
         error = next(e for e in events if e["kind"] == "error")
         assert error["peer"] == node_b.local_id
         assert "actor_not_found" in error["detail"]
+        assert error["correlation_id"] == 99
     finally:
         await node_a.stop()
         await node_b.stop()
@@ -359,3 +360,124 @@ async def test_on_event_surfaces_reconnect_gave_up():
         assert not node_a.has_peer(node_b.local_id)
     finally:
         await node_a.stop()
+
+
+def test_current_message_is_none_outside_a_handler():
+    assert current_message() is None
+
+
+async def test_local_send_exposes_current_message():
+    seen = []
+
+    @actor(name="observer")
+    class Observer:
+        async def receive(self, msg):
+            seen.append(current_message())
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        ref = Supervisor(node=node).spawn(Observer)
+        await ref.send({"hello": 1}, reply_to="somebody", correlation_id=7)
+        await wait_until(lambda: len(seen) == 1)
+        meta = seen[0]
+        assert meta.src == node.local_id
+        assert meta.reply_to == "somebody"
+        assert meta.correlation_id == 7
+        assert meta.msg_id is None
+    finally:
+        await node.stop()
+
+
+async def test_remote_send_exposes_current_message():
+    seen = []
+
+    @actor(name="processor")
+    class Processor:
+        async def receive(self, msg):
+            seen.append(current_message())
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        Supervisor(node=node_b).spawn(Processor)
+        await node_a.connect_peer(node_b.local_id)
+        remote = node_a.get_remote_actor(node_b.local_id, "processor")
+        await remote.send({"type": "TASK"}, reply_to="ingestor", correlation_id=42)
+        await wait_until(lambda: len(seen) == 1)
+        meta = seen[0]
+        assert meta.src == node_a.local_id
+        assert meta.reply_to == "ingestor"
+        assert meta.correlation_id == 42
+        assert isinstance(meta.msg_id, int)
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_node_peer_count():
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        assert node_a.peer_count() == 0
+        await node_a.connect_peer(node_b.local_id)
+        assert node_a.peer_count() == 1
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_supervisor_restarts_actor_whose_constructor_crashes():
+    attempts = {"n": 0}
+    instances = []
+
+    @actor(name="flaky_init")
+    class FlakyInit:
+        def __init__(self):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise RuntimeError("boom in constructor")
+            instances.append(self)
+
+        async def receive(self, msg):
+            pass
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        Supervisor(node=node).spawn(FlakyInit)
+        await wait_until(lambda: len(instances) == 1)
+        assert attempts["n"] == 3
+    finally:
+        await node.stop()
+
+
+async def test_on_event_surfaces_supervisor_gave_up():
+    events = []
+
+    @actor(name="always_crash_ctor")
+    class AlwaysCrashInInit:
+        def __init__(self):
+            raise RuntimeError("nope")
+
+        async def receive(self, msg):
+            pass
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    node.on_event(events.append)
+    try:
+        sup = Supervisor(node=node, max_restarts=1)
+        ref = sup.spawn(AlwaysCrashInInit)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(ref.task, timeout=5.0)
+        await wait_until(lambda: any(e["kind"] == "supervisor_gave_up" for e in events))
+        gave_up = next(e for e in events if e["kind"] == "supervisor_gave_up")
+        assert gave_up["actor"] == "always_crash_ctor"
+        assert "nope" in gave_up["detail"]
+    finally:
+        await node.stop()

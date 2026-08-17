@@ -188,6 +188,33 @@ entorno de la misma forma, pero no hay ninguna rama condicional en ningún
 sitio — cada fichero solo desempeña un papel, exactamente igual que
 `examples/app_node_a.py` y `examples/app_node_b.py`.
 
+`Processor` recibe `peer_id` inyectado por su constructor porque es la
+única forma que tiene de saber a qué nodo responder. Si un handler
+prefiere averiguarlo a partir del propio mensaje en vez de depender de un
+argumento del constructor, `lapinbeam.current_message()` lo devuelve
+directamente:
+
+```python
+from lapinbeam import current_message
+
+async def receive(self, msg):
+    if msg.get("type") == "TASK":
+        meta = current_message()  # ¿quién envió esto, y a quién responder?
+        remote = self.node.get_remote_actor(meta.src, meta.reply_to)
+        await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
+```
+
+`current_message()` devuelve un `MessageMeta(src, reply_to, correlation_id,
+msg_id)` — poblado con lo que sea que el emisor haya pasado a `send()` —
+mientras el propio handler que recibió `msg` sigue en ejecución, y `None`
+fuera de uno (p.ej. desde una tarea en segundo plano que el propio actor
+haya lanzado). Para un mensaje enviado por un actor local, `src` es el id
+de este mismo nodo, y `msg_id` siempre es `None` (es un id por conexión que
+el transporte solo asigna a mensajes remotos). `reply_to` y
+`correlation_id` son `None` a menos que el emisor los indique:
+`await ref.send(msg, reply_to="ingestor", correlation_id=7)`, tanto en
+`ActorRef` como en `RemoteRef`.
+
 Ejecútalos como dos procesos separados (ver [Ejemplos](examples.md) para
 correr esto entre contenedores u hosts reales en vez de `127.0.0.1`):
 
@@ -210,28 +237,35 @@ def on_event(event):
     if event["kind"] == "peer_disconnected":
         print("peer perdido:", event["peer"])
     elif event["kind"] == "error":
-        print("error de entrega desde", event["peer"], ":", event["detail"])
+        print("error de entrega desde", event["peer"], ":", event["detail"],
+              "correlation_id:", event["correlation_id"])
     elif event["kind"] == "decode_error":
         print("mensaje inválido para", event["actor"], ":", event["detail"])
     elif event["kind"] == "reconnect_gave_up":
         print("dejando de reintentar con:", event["peer"])
+    elif event["kind"] == "supervisor_gave_up":
+        print("actor detenido definitivamente:", event["actor"], ":", event["detail"])
 
 node.on_event(on_event)
 ```
 
 `event["kind"]` es uno de `"peer_connected"`, `"peer_disconnected"`,
 `"error"` (un peer reportó un fallo de entrega, p.ej. un mensaje enviado a
-un nombre de actor que no existe en el nodo remoto), `"decode_error"` (un
-mensaje para un actor local no se pudo decodificar — p.ej. un
-`ValidationError` de Pydantic sobre un payload mal formado — y se descartó
-antes de llegar a la mailbox de ese actor, en vez de perderse en una línea
-de log de asyncio sin relación aparente), o `"reconnect_gave_up"` (la
-reconexión automática a `event["peer"]` se abandonó tras
+un nombre de actor que no existe en el nodo remoto — `event["correlation_id"]`
+repite lo que sea que llevara el `send()` fallido, o `None`),
+`"decode_error"` (un mensaje para un actor local no se pudo decodificar —
+p.ej. un `ValidationError` de Pydantic sobre un payload mal formado — y se
+descartó antes de llegar a la mailbox de ese actor, en vez de perderse en
+una línea de log de asyncio sin relación aparente), `"reconnect_gave_up"`
+(la reconexión automática a `event["peer"]` se abandonó tras
 `reconnect_max_attempts` intentos fallidos — ya no se reintenta ni se
 sigue rastreando, así que no queda ninguna fuga; llama a `connect_peer()`
-de nuevo si quieres reintentarlo). Si ya sabes que no necesitas más un
-peer, llama a `node.forget_peer(peer_id)` en vez de esperar a que esto
-pase solo.
+de nuevo si quieres reintentarlo), o `"supervisor_gave_up"` (un
+`Supervisor` dejó de reiniciar `event["actor"]` tras demasiados fallos
+dentro de su ventana de reinicios — incluyendo un fallo en el propio
+`__init__` del actor, no solo en sus handlers `receive`/`@on` — y ya no
+sigue en ejecución). Si ya sabes que no necesitas más un peer, llama a
+`node.forget_peer(peer_id)` en vez de esperar a que esto pase solo.
 
 Siguiente: [Mensajes tipados](typed-messages.md) para enviar tipos reales de
 Python en vez de dicts, o [Benchmarks](benchmarks.md) para saber cuánto

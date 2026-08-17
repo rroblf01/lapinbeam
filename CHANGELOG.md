@@ -59,6 +59,21 @@ changes.
   internal `tracing::warn!`/`debug!` call was previously a complete no-op.
 - **`Node(..., reconnect_max_attempts=30)`** and **`Node.forget_peer(peer_id)`**
   — see "Fixed" below for the leak this closes.
+- **`lapinbeam.current_message()`**: returns a `MessageMeta(src, reply_to,
+  correlation_id, msg_id)` describing the message the running handler is
+  processing — `src` is always populated (the sending node's own id, for a
+  message sent by a local actor), the rest are `None` unless the sender set
+  them. `ActorRef.send`/`RemoteRef.send` gained matching `reply_to=`/
+  `correlation_id=` keyword arguments. This finishes wire-level fields
+  (`WireMessage.reply_to`/`correlation_id`) that already existed but were
+  silently dropped before reaching Python — see "Fixed" below.
+- `on_event`'s `"error"` events now include `event["correlation_id"]`,
+  echoing the `correlation_id` of the send that failed.
+- `on_event`'s new `"supervisor_gave_up"` kind: fires when a `Supervisor`
+  stops restarting an actor after exhausting `max_restarts` — see "Fixed"
+  below.
+- `Node.peer_count()`: the number of currently connected peers. Existed in
+  the Rust binding since the MVP but was never exposed on the Python `Node`.
 
 ### Fixed
 
@@ -75,6 +90,25 @@ changes.
   `on_event(kind="reconnect_gave_up")`. `Node.forget_peer(peer_id)` gives
   an application that already knows it's done with a peer a way to clean
   up immediately instead of waiting for that to happen on its own.
+- **Message metadata was write-only.** `WireMessage.reply_to`/
+  `correlation_id` were accepted on send and, in the `correlation_id` case,
+  even correctly threaded into the `Error` reply for an unknown-actor send
+  — but discarded before ever reaching the receiving actor or the `"error"`
+  event in Python, in two separate spots (`drain_loop` and
+  `event_drain_loop` in `src/py/node.rs`). In practice this meant an actor
+  had no built-in way to learn which node sent it a message. Both hops are
+  now wired through — see `current_message()` and `on_event`'s
+  `"correlation_id"` field above.
+- **`Supervisor` could die silently on a crash in an actor's `__init__`.**
+  Actor construction ran outside the `try`/`except` that drives restarts,
+  so a bug in `__init__` — on the very first `spawn()`, or on any later
+  restart attempt — killed the supervising task with nothing but asyncio's
+  generic "exception was never retrieved" warning: no restart, no
+  `on_event`, the actor simply stopped existing. Construction now goes
+  through the same restart/backoff path as a crash in `receive`/`@on`, and
+  exhausting restarts (for either kind of crash) now also fires
+  `on_event(kind="supervisor_gave_up")` in addition to the pre-existing
+  behavior of raising through `ActorRef.task`.
 
 ### CI/CD
 

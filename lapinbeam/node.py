@@ -11,6 +11,7 @@ import socket
 import lapinbeam._core as _core
 
 from . import codec
+from .context import MessageMeta
 from .refs import RemoteRef
 
 #: The most recently started node; used by `Supervisor` when no node is given.
@@ -123,7 +124,9 @@ class Node:
           the peer's full id.
         - `"error"` — a peer reported a delivery failure (e.g. sending to
           an unknown remote actor). `event["peer"]` is the peer's full id,
-          `event["detail"]` the error message.
+          `event["detail"]` the error message, `event["correlation_id"]`
+          echoes the `correlation_id` the failed `send()` was tagged with
+          (`None` if it wasn't tagged).
         - `"decode_error"` — a message for a local actor failed to decode
           (e.g. a Pydantic `ValidationError`, or a dataclass missing a
           required field) and was dropped before ever reaching the actor's
@@ -133,6 +136,10 @@ class Node:
           was abandoned after repeated failures; it's no longer retried.
           Call `connect_peer()` again to retry, or don't — either way, the
           peer is no longer tracked, so this isn't a leak left behind.
+        - `"supervisor_gave_up"` — a `Supervisor` stopped restarting
+          `event["actor"]` after too many crashes within its restart
+          window; `event["detail"]` describes the last exception. The
+          actor is no longer running and no further restarts will happen.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.
@@ -193,6 +200,12 @@ class Node:
             return False
         return self._core.has_peer(peer_id)
 
+    def peer_count(self):
+        """Number of currently connected peers."""
+        if self._core is None:
+            return 0
+        return self._core.peer_count()
+
     def get_remote_actor(self, peer_id, actor_name):
         """Returns a reference to an actor on a remote node."""
         return RemoteRef(self, peer_id, actor_name)
@@ -204,9 +217,9 @@ class Node:
         self._mailboxes[name] = mailbox
         loop = asyncio.get_running_loop()
 
-        def callback(msg):
+        def callback(payload, meta_dict):
             try:
-                decoded = codec.decode_payload(msg)
+                decoded = codec.decode_payload(payload)
             except Exception as exc:
                 # A malformed/unvalidated payload (e.g. a Pydantic
                 # ValidationError, or a dataclass missing a required field)
@@ -219,7 +232,13 @@ class Node:
                     "detail": f"{type(exc).__name__}: {exc}",
                 })
                 return
-            mailbox.put_nowait(decoded)
+            meta = MessageMeta(
+                src=meta_dict["src"],
+                reply_to=meta_dict["reply_to"],
+                correlation_id=meta_dict["correlation_id"],
+                msg_id=meta_dict["msg_id"],
+            )
+            mailbox.put_nowait((decoded, meta))
 
         self._core.register_actor(name, loop, callback)
 
@@ -228,11 +247,17 @@ class Node:
         if self._core is not None:
             self._core.unregister_actor(name)
 
-    async def _send_local(self, name, msg):
+    async def _send_local(self, name, msg, reply_to=None, correlation_id=None):
         mailbox = self._mailboxes.get(name)
         if mailbox is None:
             raise ValueError(f"no local actor named {name!r}")
-        await mailbox.put(msg)
+        meta = MessageMeta(
+            src=self.local_id,
+            reply_to=reply_to,
+            correlation_id=correlation_id,
+            msg_id=None,
+        )
+        await mailbox.put((msg, meta))
 
     async def _send_remote(self, peer_id, actor_name, msg, reply_to=None, correlation_id=None):
         if self._core is None:
