@@ -210,6 +210,14 @@ actual current code rather than trusting existing prose — found and fixed:
   still honestly says this hasn't run at production scale yet, rather than
   either leaving a stale "alpha" label or overclaiming production-proven
   maturity it hasn't earned.
+- **New page: [AI agents & MCP](https://rroblf01.github.io/lapinbeam/ai-agents/)**
+  (`docs/ai-agents.md`/`.es.md`). Two worked examples applying `ask()`/
+  `current_message().reply()` to a concrete shape of problem instead of a
+  generic demo: dispatching MCP tool calls from an MCP server process to a
+  specialized worker node (e.g. a code sandbox), and fanning a question out
+  concurrently to several LLM-backed "expert" actors and picking the best
+  reply (mixture-of-experts). Each has a sequence diagram and a runnable
+  code sample using the real, current API.
 
 ### CI/CD
 

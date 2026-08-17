@@ -51,6 +51,7 @@ nav:
   - lapinbeam vs. Celery + RabbitMQ: vs-celery-rabbitmq.md
   - Benchmarks: benchmarks.md
   - Examples: examples.md
+  - AI agents & MCP: ai-agents.md
 
 plugins:
   - search
@@ -71,3 +72,4 @@ plugins:
             lapinbeam vs. Celery + RabbitMQ: lapinbeam frente a Celery + RabbitMQ
             Benchmarks: Benchmarks
             Examples: Ejemplos
+            AI agents & MCP: Agentes de IA y MCP

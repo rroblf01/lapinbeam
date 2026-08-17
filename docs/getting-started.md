@@ -253,7 +253,10 @@ class Processor:
 If nothing replies within `timeout` seconds (5 by default; `None` waits
 forever), `ask()` raises `TimeoutError`. Under the hood it registers a
 one-shot hidden mailbox as the reply address and cleans it up afterwards —
-there's no persistent extra actor or resource left behind.
+there's no persistent extra actor or resource left behind. See
+[AI agents & MCP](ai-agents.md) for a worked example: dispatching MCP tool
+calls to a worker node, and fanning a question out to several expert actors
+concurrently.
 
 Run them as two separate processes (see
 [Examples](examples.md) for running this across containers or real hosts
