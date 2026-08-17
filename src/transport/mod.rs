@@ -198,8 +198,30 @@ impl Transport {
 
     /// Dials a peer, performs the handshake and starts tracking it.
     /// The peer is marked as *desired*, so it is reconnected automatically
-    /// if the connection drops.
+    /// if the connection drops — including if this very first dial fails:
+    /// unlike a connection that drops *after* being established (which
+    /// `reconnect_supervisor` retries by reacting to `PeerDisconnected`), a
+    /// peer that was never reachable in the first place never fires that
+    /// event, so without this a failed first dial left the peer in
+    /// `desired` forever with no further attempt ever made.
     pub async fn connect(&self, peer: NodeId) -> Result<(), std::io::Error> {
+        match self.dial(peer.clone()).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if self.config.reconnect {
+                    let t = self.clone();
+                    tokio::spawn(async move { t.reconnect_loop(peer).await });
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The actual dial + handshake, shared by `connect()` and
+    /// `reconnect_loop`'s own retries. Split out so a failed retry from
+    /// inside `reconnect_loop` doesn't spawn a second, competing
+    /// `reconnect_loop` for the same peer (only `connect()` does that).
+    async fn dial(&self, peer: NodeId) -> Result<(), std::io::Error> {
         if self.has_peer(&peer).await {
             return Ok(());
         }
@@ -411,7 +433,7 @@ impl Transport {
         let mut read_buf = [0u8; 4096];
         let mut registered: Option<(NodeId, PeerHandle)> = pre_known;
 
-        loop {
+        'read_loop: loop {
             let read_result =
                 tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)).await;
             let n = match read_result {
@@ -439,13 +461,20 @@ impl Transport {
                     // can't detect on its own (it isn't self-describing), so
                     // don't risk misinterpreting the rest of this stream —
                     // drop the connection instead of silently proceeding.
+                    // This must go through the same post-loop cleanup as
+                    // EOF/read-error (`break`, not `return`): an already
+                    // *registered* peer that later sends a mismatched-version
+                    // frame otherwise leaked its `peers` map entry forever —
+                    // `has_peer()` kept reporting it connected, and
+                    // `reconnect_supervisor` never saw the `PeerDisconnected`
+                    // it needed to react to.
                     tracing::warn!(
                         got = msg.version,
                         expected = PROTOCOL_VERSION,
                         src = %msg.src,
                         "protocol version mismatch, dropping connection"
                     );
-                    return;
+                    break 'read_loop;
                 }
                 if msg.kind == MessageKind::Handshake {
                     if registered.is_none() {
@@ -569,11 +598,9 @@ impl Transport {
             if self.has_peer(&peer).await {
                 return;
             }
-            let attempt = tokio::time::timeout(
-                self.config.reconnect_interval * 3,
-                self.connect(peer.clone()),
-            )
-            .await;
+            let attempt =
+                tokio::time::timeout(self.config.reconnect_interval * 3, self.dial(peer.clone()))
+                    .await;
             match attempt {
                 Ok(Ok(())) => return,
                 Ok(Err(e)) => tracing::debug!(%e, peer = %peer.to_full(), "reconnect failed"),

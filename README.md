@@ -11,7 +11,7 @@ Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.g
 
 ## Status
 
-`1.0.0` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+`1.0.1` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
 `RemoteRef`, `codec`) is stable; a breaking change now requires a major
 version bump. This hasn't been run at production scale yet — see
 [Limitations](#limitations) below for what it deliberately doesn't do.
@@ -139,10 +139,19 @@ Measured on this machine (Python 3.14, loopback):
   a nested `@dataclass` value reconstructed on decode — it comes back as a plain
   dict instead; a properly-typed field (e.g. `inner: Inner`) round-trips fine via
   Pydantic's own validation.
-- Actor names must be unique per node. Simultaneous dial (both nodes connecting
-  to each other at once) is resolved deterministically — exactly one connection
-  survives, not two.
-- Actor mailboxes are unbounded by default; see `Node(mailbox_capacity=...)`.
+- Actor names must be unique per node — `Supervisor.spawn()` raises
+  `ValueError` if the name is already registered to a different actor.
+  Simultaneous dial (both nodes connecting to each other at once) is
+  resolved deterministically — exactly one connection survives, not two.
+- No message persistence and no at-least-once delivery: a message in flight
+  during a network partition is lost, not retried. See
+  [lapinbeam vs. Celery + RabbitMQ](https://rroblf01.github.io/lapinbeam/vs-celery-rabbitmq/)
+  for what that means in practice.
+- Actor mailboxes are unbounded by default: an actor that can't keep up with
+  its inbound rate has its mailbox grow without limit instead of applying
+  backpressure. Pass `Node(..., mailbox_capacity=N)` to cap it — a full
+  mailbox then drops new messages instead, firing `on_event(kind="mailbox_full")`
+  (and, for a dropped remote send, an `"error"` event back on the sender).
 - Payloads larger than 16 MiB are rejected on the sender.
 
 ## Publishing to PyPI

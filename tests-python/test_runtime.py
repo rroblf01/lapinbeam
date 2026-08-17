@@ -715,3 +715,147 @@ async def test_message_meta_reply_without_reply_to_raises():
     meta = MessageMeta(src="x@127.0.0.1:1", reply_to=None, correlation_id=None, msg_id=None, node=None)
     with pytest.raises(RuntimeError):
         await meta.reply({"x": 1})
+
+
+async def test_restart_does_not_drop_messages_already_queued():
+    # A crash only consumes the one message that caused it (already
+    # dequeued before the handler ran) — any messages sent right after it,
+    # still sitting in the same mailbox when the crash happened, must
+    # survive the restart instead of being discarded along with a
+    # replaced, empty queue.
+    crashes = {"n": 0}
+    received = []
+
+    @actor(name="flaky")
+    class Flaky:
+        async def receive(self, msg):
+            crashes["n"] += 1
+            if crashes["n"] == 1:
+                raise RuntimeError("boom")
+            received.append(msg)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        ref = Supervisor(node=node).spawn(Flaky)
+        # All three land in the mailbox before the first one is even
+        # dequeued — no sleep in between, unlike
+        # test_supervisor_restarts_crashed_actor above.
+        await ref.send({"n": 1})
+        await ref.send({"n": 2})
+        await ref.send({"n": 3})
+        await wait_until(lambda: len(received) == 2)
+        assert [msg["n"] for msg in received] == [2, 3]
+    finally:
+        await node.stop()
+
+
+async def test_spawn_raises_on_duplicate_actor_name():
+    received = []
+
+    @actor(name="dup")
+    class Dup:
+        async def receive(self, msg):
+            received.append(msg)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        first = sup.spawn(Dup)
+        with pytest.raises(ValueError):
+            sup.spawn(Dup)
+        # The first actor must be unaffected by the failed second spawn.
+        await first.send({"x": 1})
+        await wait_until(lambda: len(received) == 1)
+    finally:
+        await node.stop()
+
+
+async def test_current_message_in_background_task_is_a_frozen_snapshot():
+    # `current_message()` is bound via a `contextvars.ContextVar`. A task
+    # created with `asyncio.create_task()` from inside a handler copies the
+    # ambient context at creation time, so it inherits that handler's
+    # `current_message()` — and keeps returning that same, increasingly
+    # stale value for as long as it runs, even once the actor has moved on
+    # to a different message. This pins down that real (if surprising)
+    # behavior — see `current_message()`'s docstring.
+    bg_seen = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @actor(name="spawner")
+    class Spawner:
+        async def receive(self, msg):
+            if msg.get("spawn_bg"):
+                async def bg():
+                    started.set()
+                    await release.wait()
+                    bg_seen.append(current_message())
+
+                asyncio.create_task(bg())
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        ref = Supervisor(node=node).spawn(Spawner)
+        await ref.send({"spawn_bg": True}, correlation_id=1)
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        # The actor moves on to a second, unrelated message while the
+        # background task from the first message is still alive.
+        await ref.send({"spawn_bg": False}, correlation_id=2)
+        await asyncio.sleep(0.05)
+
+        release.set()
+        await wait_until(lambda: len(bg_seen) == 1)
+        assert bg_seen[0].correlation_id == 1
+    finally:
+        await node.stop()
+
+
+async def test_on_event_listener_exception_does_not_break_local_send():
+    node = Node("node@127.0.0.1:0", mailbox_capacity=1)
+    await node.start()
+    try:
+        node.on_event(lambda event: 1 / 0)
+
+        @actor(name="stuck")
+        class Stuck:
+            async def receive(self, msg):
+                await asyncio.sleep(5)
+
+        ref = Supervisor(node=node).spawn(Stuck)
+        await ref.send({"a": 1})
+        await asyncio.sleep(0.05)  # let the handler dequeue it and block
+        await ref.send({"b": 2})  # fills the one-slot mailbox
+        # This one hits QueueFull, firing "mailbox_full" — the broken
+        # listener above must not make this fire-and-forget send raise.
+        await ref.send({"c": 3})
+    finally:
+        await node.stop()
+
+
+async def test_on_event_listener_exception_does_not_mask_supervisor_give_up():
+    @actor(name="always_crash")
+    class AlwaysCrash:
+        async def receive(self, msg):
+            raise RuntimeError("real crash reason")
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        node.on_event(lambda event: 1 / 0)
+        sup = Supervisor(node=node, max_restarts=1)
+        ref = sup.spawn(AlwaysCrash)
+        # First message: allowed restart. Second (already queued —
+        # preserved across the restart, see the mailbox-reuse fix above):
+        # exceeds max_restarts, so the actor gives up for good.
+        await ref.send({})
+        await ref.send({})
+        # The broken listener must not replace the real crash exception
+        # with its own when `supervisor_gave_up` fires.
+        with pytest.raises(RuntimeError, match="real crash reason"):
+            await asyncio.wait_for(ref.task, timeout=5.0)
+    finally:
+        await node.stop()

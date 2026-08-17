@@ -46,9 +46,20 @@ current = contextvars.ContextVar("lapinbeam_current_message", default=None)
 
 
 def current_message() -> Optional[MessageMeta]:
-    """Metadata for the message the running actor handler is processing.
+    """Metadata for the message the currently running code is processing.
 
-    Returns `None` outside of a handler call — e.g. from a background task
-    an actor spawned itself, which runs outside the handler's context.
+    Bound for the duration of each handler call by `Supervisor._drive`.
+    Because this is a `contextvars.ContextVar`, a task created with
+    `asyncio.create_task()` from *inside* a handler inherits whatever
+    `current_message()` returns at the moment the task is created — and
+    keeps returning that same, increasingly stale `MessageMeta` for as long
+    as it runs, even after the handler that spawned it has moved on to a
+    different message (or finished). Don't call `.reply()` from such a
+    background task expecting it to still target the right message — read
+    what you need from `current_message()` before creating the task and
+    pass it in explicitly instead.
+
+    Returns `None` outside of any handler's context — e.g. a task created
+    at module scope, before any message has been dispatched.
     """
     return current.get()

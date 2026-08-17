@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc};
 
 use _core::runtime::NodeId;
@@ -252,6 +252,49 @@ async fn protocol_version_mismatch_drops_connection() {
         .expect("connection was not closed after a protocol version mismatch")
         .expect("read error");
     assert_eq!(n, 0, "expected EOF after a protocol version mismatch");
+}
+
+#[tokio::test]
+async fn protocol_version_mismatch_after_registration_evicts_peer() {
+    // Same defect class as `protocol_version_mismatch_drops_connection`
+    // above, but for a peer that already completed a valid handshake: a
+    // *later* frame with a mismatched version used to be dropped via
+    // `return` instead of `break`, skipping the post-loop cleanup that
+    // evicts the `peers` map entry and fires `PeerDisconnected` — leaking
+    // the connection and making `has_peer()` lie forever.
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
+        .await
+        .unwrap();
+
+    let mut sock = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
+    let ghost = NodeId::parse("ghost@127.0.0.1:9999").unwrap();
+    sock.write_all(&encode_frame(&WireMessage::handshake(1, ghost.to_full())).unwrap())
+        .await
+        .unwrap();
+    wait_until(|| async { node_a.has_peer(&ghost).await }).await;
+
+    let events = node_a.event_stream();
+    let bad_frame = WireMessage {
+        version: PROTOCOL_VERSION + 1,
+        msg_id: 2,
+        src: ghost.to_full(),
+        dst_actor: String::new(),
+        kind: MessageKind::Heartbeat,
+        payload: Vec::new(),
+        reply_to: None,
+        correlation_id: None,
+    };
+    sock.write_all(&encode_frame(&bad_frame).unwrap())
+        .await
+        .unwrap();
+
+    match wait_for_event(events, |ev| matches!(ev, Event::PeerDisconnected(_))).await {
+        Event::PeerDisconnected(id) => assert_eq!(id, ghost),
+        other => panic!("expected PeerDisconnected, got {other:?}"),
+    }
+    assert!(!node_a.has_peer(&ghost).await);
 }
 
 #[tokio::test]
@@ -658,6 +701,54 @@ async fn stale_connection_cleanup_does_not_evict_fresh_one() {
         "stale cleanup evicted the fresh connection"
     );
     keepalive.abort();
+}
+
+#[tokio::test]
+async fn connect_retries_after_initial_dial_failure() {
+    // A peer that drops *after* connecting is retried by `reconnect_supervisor`
+    // reacting to `PeerDisconnected`. A peer that was never reachable in the
+    // first place never fires that event, so this exercises the other path:
+    // `connect()` itself must schedule a retry when the very first dial fails.
+
+    // Reserve a real port, then free it immediately, so the first dial
+    // attempt below fails outright (nothing listening yet) instead of
+    // racing to find a port nobody happens to be using.
+    let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = probe.local_addr().unwrap();
+    drop(probe);
+    let b_id = NodeId::parse(&format!("node_b@127.0.0.1:{}", addr.port())).unwrap();
+
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        reconnect_config(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        node_a.connect(b_id.clone()).await.is_err(),
+        "nothing should be listening at b_id yet"
+    );
+
+    // The peer must still be retried automatically once it comes up —
+    // without ever calling `connect()` again.
+    let node_b = Transport::listen(b_id.clone(), reconnect_config())
+        .await
+        .unwrap();
+    let (tx_b, mut rx_b) = mpsc::channel(16);
+    node_b.register_actor("processor".into(), tx_b).await;
+
+    wait_until(|| async { node_a.has_peer(&b_id).await }).await;
+
+    node_a
+        .send_data(&b_id, "processor", json!({"ping": 1}), None, None)
+        .await
+        .unwrap();
+    let msg = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+        .await
+        .expect("node_b mailbox timeout")
+        .expect("mailbox closed");
+    assert_eq!(msg.payload_json().unwrap(), json!({"ping": 1}));
 }
 
 #[tokio::test]

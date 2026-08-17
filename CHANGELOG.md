@@ -8,6 +8,73 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-17
+
+A focused bug-fix pass following a full-codebase review of the `1.0.0`
+release (Rust core, Python layer, tests/CI/docs consistency, and packaging/
+usability) — see the Fixed section below for what it found. No public API
+changes; every fix here restores behavior the docs already claimed.
+
+### Fixed
+
+- **Restarting a crashed actor silently dropped any messages already
+  queued behind the one that crashed.** `Supervisor._watch` replaced the
+  actor's mailbox with a brand-new, empty `asyncio.Queue` on every restart
+  — discarding anything sent in the same burst as the message that caused
+  the crash (only the crashing message itself, already dequeued, is
+  actually gone). The same mailbox is now reused across restarts, so
+  subsequent messages are simply picked up once the actor comes back.
+- **A peer that sent a mismatched protocol version *after* completing its
+  handshake leaked the connection.** `Transport::read_loop` dropped it via
+  `return`, skipping the cleanup step (evicting the `peers` map entry,
+  firing `Event::PeerDisconnected`) that only ran on the `break` path used
+  by EOF/read-error/timeout. `has_peer()` reported the peer as connected
+  forever, and `reconnect_supervisor` never got the disconnect event it
+  needed to react to. (The pre-handshake version-mismatch case, already
+  covered by a test, was unaffected.)
+- **A peer that was never reachable on the very first `connect()` was
+  never retried.** Automatic reconnection only reacts to
+  `Event::PeerDisconnected`, which is never fired for a dial that failed
+  outright (nothing was ever connected to disconnect from) — so the peer
+  sat in the desired-peers set forever with zero further attempts,
+  contradicting the documented "automatic reconnection of desired peers."
+  `connect()` now schedules the same retry loop used for a peer that drops
+  after connecting.
+- **Spawning two actors under the same name silently stole the mailbox out
+  from under the first one.** `Node.register_actor` was a plain overwrite
+  with no uniqueness check, despite the docs stating actor names must be
+  unique per node. The first actor kept running but could never be reached
+  again, with no error or event to explain why. `Supervisor.spawn()` now
+  raises `ValueError` for a name already registered to a different actor
+  (re-registering the *same* actor's mailbox across a restart is
+  unaffected).
+- **A raising `on_event` listener could corrupt unrelated control flow.**
+  `Node._on_core_event` called every registered listener unguarded, from
+  call sites where an exception matters beyond logging: an ordinary
+  `ActorRef.send()` hitting a full mailbox, and `Supervisor` re-raising the
+  real crash reason after giving up on restarts. A broken listener could
+  make a fire-and-forget `send()` raise unexpectedly, or replace the real
+  `supervisor_gave_up` exception with its own. Listener exceptions are now
+  caught and logged (`logging.getLogger("lapinbeam")`) instead of
+  propagating.
+
+### Documentation
+
+- Corrected `current_message()`'s docstring: a task created with
+  `asyncio.create_task()` from inside a handler actually inherits that
+  handler's `current_message()` (Python's `contextvars` copy the ambient
+  context into every new task) and keeps returning that same snapshot even
+  after the actor moves on — it does not see `None`, as previously
+  (incorrectly) documented.
+- `docs/index.md`'s Security section now spells out that a mismatched
+  `cluster_secret` is not reported by `connect_peer()` itself — the dialer
+  marks itself connected before the acceptor has verified anything, so the
+  rejection only surfaces later, via `has_peer()` or `reconnect_gave_up`.
+- Re-synced README.md's Limitations section with docs/index.md's (the two
+  had drifted again): added the missing "no persistence / no
+  at-least-once delivery" bullet and the `mailbox_full` event detail, and
+  noted that the actor-name-uniqueness constraint is now actually enforced.
+
 ## [1.0.0] - 2026-08-17
 
 Everything below shipped as alpha work-in-progress against the `0.1.0` base

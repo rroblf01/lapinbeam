@@ -78,6 +78,14 @@ limits, stated plainly:
   can already observe traffic can capture a valid handshake and replay it
   later. This closes "any random process can join," not "a passive
   attacker on the wire can never get in."
+- **A mismatched secret is not reported by `connect_peer()` itself.** The
+  dialer marks itself connected the instant it sends the handshake — before
+  the acceptor has had a chance to check it — so `await
+  node.connect_peer(...)` can return normally even when the secret is
+  wrong. The acceptor drops its side moments later; the dialer only learns
+  this afterward, from `has_peer()` turning `False` again or (after
+  `reconnect_max_attempts`) an `on_event(kind="reconnect_gave_up")`, not
+  from an exception out of `connect_peer()`.
 
 It's fine for a cluster of processes on a network boundary you already
 trust — a private VPC, a single Docker Compose/Kubernetes network, a LAN —
@@ -111,9 +119,10 @@ Continue with [Getting started](getting-started.md).
   `Any`) won't get a nested `@dataclass` value reconstructed on decode — it
   comes back as a plain dict instead; a properly-typed field (e.g.
   `inner: Inner`) round-trips fine via Pydantic's own validation.
-- Actor names must be unique per node. Simultaneous dial (both nodes
-  connecting to each other at once) is resolved deterministically — exactly
-  one connection survives, not two.
+- Actor names must be unique per node — `Supervisor.spawn()` raises
+  `ValueError` if the name is already registered to a different actor.
+  Simultaneous dial (both nodes connecting to each other at once) is
+  resolved deterministically — exactly one connection survives, not two.
 - No message persistence and no at-least-once delivery: a message in flight
   during a network partition is lost, not retried. See
   [lapinbeam vs. Celery + RabbitMQ](vs-celery-rabbitmq.md) for what that

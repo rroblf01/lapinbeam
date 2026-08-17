@@ -6,6 +6,7 @@ the listener and the peer connections. Python actors are delivered to through
 """
 
 import asyncio
+import logging
 import socket
 
 import lapinbeam._core as _core
@@ -13,6 +14,8 @@ import lapinbeam._core as _core
 from . import codec
 from .context import MessageMeta
 from .refs import RemoteRef
+
+_logger = logging.getLogger("lapinbeam")
 
 #: The most recently started node; used by `Supervisor` when no node is given.
 _current_node = None
@@ -205,7 +208,18 @@ class Node:
                     if not fut.done():
                         fut.set_result(None)
         for callback in list(self._event_listeners):
-            callback(event)
+            try:
+                callback(event)
+            except Exception:
+                # This runs inline on whatever unrelated call raised the
+                # event — an ordinary `ActorRef.send()` hitting a full
+                # mailbox, or a `Supervisor` about to re-raise the real
+                # crash reason after giving up on restarts. A broken
+                # listener must not corrupt that caller's control flow (an
+                # unexpected exception out of a "fire-and-forget" send, or
+                # the real crash exception getting replaced by the
+                # listener's own).
+                _logger.exception("on_event listener raised for event %r", event)
 
     async def connect_peer(self, peer_id):
         """Connects to a peer and waits until the handshake completes."""
@@ -262,9 +276,21 @@ class Node:
         return RemoteRef(self, peer_id, actor_name)
 
     def register_actor(self, name, mailbox):
-        """Registers the asyncio mailbox for a local actor."""
+        """Registers the asyncio mailbox for a local actor.
+
+        Raises `ValueError` if `name` is already registered to a *different*
+        mailbox — actor names must be unique per node. Re-registering the
+        same mailbox object (e.g. `Supervisor` re-registering across a
+        restart, which reuses the crashed actor's mailbox) is not a
+        collision and is allowed. Without this check, a second `spawn()`
+        under a name already in use silently stole all future mail from the
+        first actor, which kept running but could never be reached again.
+        """
         if self._core is None:
             raise RuntimeError("node has not been started")
+        existing = self._mailboxes.get(name)
+        if existing is not None and existing is not mailbox:
+            raise ValueError(f"actor name {name!r} is already registered on this node")
         self._mailboxes[name] = mailbox
         loop = asyncio.get_running_loop()
 

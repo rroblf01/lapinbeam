@@ -81,6 +81,15 @@ distribución de Erlang durante décadas (una cookie de clúster compartida)
   handshake válido y reproducirlo más tarde. Esto cierra "cualquier
   proceso puede unirse", no "un atacante pasivo en el cable nunca puede
   entrar".
+- **Un secreto que no coincide no lo reporta `connect_peer()`.** Quien
+  marca se da a sí mismo por conectado en el instante en que envía el
+  handshake — antes de que quien acepta haya tenido ocasión de
+  comprobarlo — así que `await node.connect_peer(...)` puede retornar con
+  normalidad aunque el secreto sea incorrecto. Quien acepta cierra su lado
+  momentos después; quien marca solo se entera más tarde, al ver que
+  `has_peer()` vuelve a ser `False` o (tras `reconnect_max_attempts`) por un
+  `on_event(kind="reconnect_gave_up")`, no por una excepción de
+  `connect_peer()`.
 
 Está bien para un clúster de procesos dentro de un límite de red en el que
 ya confías — una VPC privada, una única red de Docker Compose/Kubernetes,
@@ -116,9 +125,10 @@ Continúa con [Primeros pasos](getting-started.md).
   anidado al decodificar — vuelve como un dict plano; un campo bien tipado
   (p.ej. `inner: Inner`) sí hace el roundtrip correctamente gracias a la
   propia validación de Pydantic.
-- Los nombres de actor deben ser únicos por nodo. El dial simultáneo (ambos
-  nodos conectándose entre sí a la vez) se resuelve de forma determinista —
-  sobrevive exactamente una conexión, no dos.
+- Los nombres de actor deben ser únicos por nodo — `Supervisor.spawn()`
+  lanza `ValueError` si el nombre ya está registrado para otro actor. El
+  dial simultáneo (ambos nodos conectándose entre sí a la vez) se resuelve
+  de forma determinista — sobrevive exactamente una conexión, no dos.
 - No hay persistencia de mensajes ni entrega "at-least-once": un mensaje en
   vuelo durante una partición de red se pierde, no se reintenta. Consulta
   [lapinbeam frente a Celery + RabbitMQ](vs-celery-rabbitmq.md) para lo que

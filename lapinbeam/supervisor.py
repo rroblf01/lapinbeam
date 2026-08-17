@@ -62,8 +62,7 @@ class Supervisor:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _watch(self, node, name, actor_cls, args, kwargs, first_mailbox):
-        mailbox = first_mailbox
+    async def _watch(self, node, name, actor_cls, args, kwargs, mailbox):
         while True:
             try:
                 # Constructing the actor is inside the try/except: a bug in
@@ -76,9 +75,11 @@ class Supervisor:
                 # this iteration — `spawn()` may have already registered the
                 # mailbox eagerly (see its comment), so it's always called
                 # unconditionally rather than gated on how far this
-                # iteration got.
+                # iteration got. The same `mailbox` is reused across
+                # restarts (see the `except Exception` branch below), so
+                # re-registering it here is just re-pointing the routing
+                # table at the same queue, not creating a new one.
                 instance = actor_cls(*args, **kwargs)
-                mailbox = mailbox or asyncio.Queue(maxsize=node.mailbox_capacity or 0)
                 node.register_actor(name, mailbox)
                 driver = asyncio.create_task(self._drive(instance, mailbox))
                 await driver
@@ -87,7 +88,12 @@ class Supervisor:
                 raise
             except Exception as exc:
                 node.unregister_actor(name)
-                mailbox = None
+                # `mailbox` is deliberately *not* reset to `None` here: the
+                # message that caused this crash is already gone (it was
+                # dequeued before the handler ran), but any messages sent
+                # right after it — still sitting in this same queue when the
+                # crash happened — must survive the restart. Replacing it
+                # with a fresh queue silently dropped them.
                 if not self._allow_restart():
                     node._on_core_event({
                         "kind": "supervisor_gave_up",
