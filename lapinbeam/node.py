@@ -72,6 +72,7 @@ class Node:
         self._started = False
         self._event_listeners = []
         self._peer_waiters = {}
+        self._actor_tasks = set()
 
     @staticmethod
     def _build_id(node_name, listen_port):
@@ -111,7 +112,19 @@ class Node:
         _current_node = self
 
     async def stop(self):
-        """Shuts down the background runtime."""
+        """Shuts down the background runtime.
+
+        Also cancels every actor task spawned by any `Supervisor` on this
+        node — without this, each one would be left running forever,
+        permanently blocked reading from a mailbox nothing will ever fill
+        again. To tear down only a specific `Supervisor`'s actors instead
+        of the whole node, use `Supervisor.shutdown()`.
+        """
+        tasks = list(self._actor_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if self._core is not None:
             self._core.stop()
             self._core = None
@@ -124,6 +137,16 @@ class Node:
         self._peer_waiters.clear()
         if self._stopped is not None:
             self._stopped.set()
+
+    def _register_task(self, task):
+        """Tracks a Supervisor-spawned actor task so `stop()` can cancel it.
+
+        Self-pruning: an actor task that finishes on its own (a normal
+        return, or `Supervisor` giving up on it) is dropped from tracking
+        as soon as it's done, instead of accumulating here forever.
+        """
+        self._actor_tasks.add(task)
+        task.add_done_callback(self._actor_tasks.discard)
 
     async def __aenter__(self):
         await self.start()
@@ -265,6 +288,7 @@ class Node:
                 reply_to=meta_dict["reply_to"],
                 correlation_id=meta_dict["correlation_id"],
                 msg_id=meta_dict["msg_id"],
+                node=self,
             )
             try:
                 mailbox.put_nowait((decoded, meta))
@@ -299,6 +323,7 @@ class Node:
             reply_to=reply_to,
             correlation_id=correlation_id,
             msg_id=None,
+            node=self,
         )
         try:
             mailbox.put_nowait((msg, meta))

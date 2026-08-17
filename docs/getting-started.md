@@ -66,6 +66,12 @@ async with Node("app@127.0.0.1:0") as node:
 # node.stop() runs automatically on exit, even if the block raises.
 ```
 
+`node.stop()` also cancels every actor task spawned by any `Supervisor` on
+that node — none are left running forever, blocked on a mailbox nothing
+will ever fill again. To tear down only one `Supervisor`'s actors instead
+of the whole node (e.g. multiple supervisors sharing one node), call
+`await sup.shutdown()` directly.
+
 ## Two nodes talking to each other
 
 This is the two-node demo in `examples/`, and the one thing worth being
@@ -200,14 +206,54 @@ async def receive(self, msg):
 ```
 
 `current_message()` returns a `MessageMeta(src, reply_to, correlation_id,
-msg_id)` — populated from whatever the sender passed to `send()` — for as
-long as the handler coroutine that received `msg` is running, and `None`
-outside of one (e.g. from a background task an actor spawned itself). For a
-message sent by a local actor, `src` is this node's own id, and `msg_id` is
-always `None` (it's a per-connection id the transport assigns to remote
-messages only). `reply_to` and `correlation_id` are `None` unless the sender
-set them: `await ref.send(msg, reply_to="ingestor", correlation_id=7)`, on
-both `ActorRef` and `RemoteRef`.
+msg_id, node)` — populated from whatever the sender passed to `send()` —
+for as long as the handler coroutine that received `msg` is running, and
+`None` outside of one (e.g. from a background task an actor spawned
+itself). For a message sent by a local actor, `src` is this node's own id,
+and `msg_id` is always `None` (it's a per-connection id the transport
+assigns to remote messages only). `reply_to` and `correlation_id` are
+`None` unless the sender set them: `await ref.send(msg, reply_to="ingestor",
+correlation_id=7)`, on both `ActorRef` and `RemoteRef`.
+
+Since replying to whoever sent a message — to `reply_to`, tagged with the
+same `correlation_id`, whether they were local or remote — is common enough
+to have its own shortcut, the snippet above can be written as:
+
+```python
+async def receive(self, msg):
+    if msg.get("type") == "TASK":
+        await current_message().reply({"type": "ACK", "payload_id": msg["payload_id"]})
+```
+
+`meta.reply(msg)` raises `RuntimeError` if `meta.reply_to` is `None` — there's
+nothing sent it a return address to reply to.
+
+## Request/response with `ask()`
+
+`send()` is always fire-and-forget — nothing ties a reply back to the send
+that provoked it unless you build that yourself. `ask()` does exactly that:
+it tags the send with a fresh `correlation_id`, waits for a single reply,
+and works the same on `ActorRef` and `RemoteRef`:
+
+```python
+reply = await remote_processor.ask({"type": "TASK", "payload_id": 1})
+```
+
+The receiving handler still has to actually reply — `ask()` doesn't change
+what a handler does, it only changes how the *caller* waits:
+
+```python
+@actor(name="processor")
+class Processor:
+    async def receive(self, msg):
+        result = msg["payload_id"] * 2
+        await current_message().reply({"type": "ACK", "result": result})
+```
+
+If nothing replies within `timeout` seconds (5 by default; `None` waits
+forever), `ask()` raises `TimeoutError`. Under the hood it registers a
+one-shot hidden mailbox as the reply address and cleans it up afterwards —
+there's no persistent extra actor or resource left behind.
 
 Run them as two separate processes (see
 [Examples](examples.md) for running this across containers or real hosts

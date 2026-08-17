@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from helpers import wait_until
-from lapinbeam import Node, Supervisor, actor, current_message
+from lapinbeam import MessageMeta, Node, Supervisor, actor, current_message
 from lapinbeam.codec import RESERVED
 
 
@@ -479,6 +479,10 @@ async def test_on_event_surfaces_supervisor_gave_up():
         gave_up = next(e for e in events if e["kind"] == "supervisor_gave_up")
         assert gave_up["actor"] == "always_crash_ctor"
         assert "nope" in gave_up["detail"]
+        # The finished task must not linger in _watchers forever — this is
+        # what used to leak for a Supervisor that spawns many short-lived
+        # actors over its life (e.g. a worker-pool pattern).
+        assert ref.task not in sup._watchers
     finally:
         await node.stop()
 
@@ -609,3 +613,105 @@ async def test_custom_peer_queue_capacity_does_not_break_normal_delivery():
     finally:
         await node_a.stop()
         await node_b.stop()
+
+
+async def test_node_stop_cancels_actor_tasks():
+    @actor(name="stuck")
+    class Stuck:
+        async def receive(self, msg):
+            await asyncio.sleep(1000)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    ref = Supervisor(node=node).spawn(Stuck)
+    await ref.send({})
+    await asyncio.sleep(0.05)  # let it actually start blocking in receive()
+    await node.stop()
+    assert ref.task.done()
+    assert ref.task.cancelled()
+
+
+async def test_supervisor_shutdown_cancels_only_its_own_actors():
+    @actor(name="a")
+    class A:
+        async def receive(self, msg):
+            await asyncio.sleep(1000)
+
+    @actor(name="b")
+    class B:
+        async def receive(self, msg):
+            await asyncio.sleep(1000)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup_a = Supervisor(node=node)
+        sup_b = Supervisor(node=node)
+        ref_a = sup_a.spawn(A)
+        ref_b = sup_b.spawn(B)
+        await sup_a.shutdown()
+        assert ref_a.task.done() and ref_a.task.cancelled()
+        assert not ref_b.task.done()
+    finally:
+        await node.stop()
+
+
+async def test_local_ask_returns_correlated_reply():
+    @actor(name="echoer")
+    class Echoer:
+        async def receive(self, msg):
+            await current_message().reply({"echo": msg["n"]})
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        ref = Supervisor(node=node).spawn(Echoer)
+        reply = await ref.ask({"n": 42})
+        assert reply == {"echo": 42}
+    finally:
+        await node.stop()
+
+
+async def test_remote_ask_returns_correlated_reply():
+    @actor(name="echoer")
+    class Echoer:
+        async def receive(self, msg):
+            await current_message().reply({"echo": msg["n"]})
+
+    node_a = Node("node_a@127.0.0.1:0")
+    node_b = Node("node_b@127.0.0.1:0")
+    await node_a.start()
+    await node_b.start()
+    try:
+        Supervisor(node=node_b).spawn(Echoer)
+        await node_a.connect_peer(node_b.local_id)
+        remote = node_a.get_remote_actor(node_b.local_id, "echoer")
+        reply = await remote.ask({"n": 7})
+        assert reply == {"echo": 7}
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
+async def test_ask_times_out_if_nothing_replies():
+    @actor(name="silent")
+    class Silent:
+        async def receive(self, msg):
+            pass  # never replies
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        ref = Supervisor(node=node).spawn(Silent)
+        with pytest.raises(TimeoutError):
+            await ref.ask({"n": 1}, timeout=0.2)
+        # The one-shot reply mailbox must not be left registered forever.
+        assert not any(name.startswith("__lapinbeam_ask_") for name in node._mailboxes)
+    finally:
+        await node.stop()
+
+
+async def test_message_meta_reply_without_reply_to_raises():
+    meta = MessageMeta(src="x@127.0.0.1:1", reply_to=None, correlation_id=None, msg_id=None, node=None)
+    with pytest.raises(RuntimeError):
+        await meta.reply({"x": 1})

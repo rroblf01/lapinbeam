@@ -89,6 +89,24 @@ changes.
   `cluster_secret`) and `docker-compose.restart.yml` (kills and restarts
   one container mid-stream, verifying the other reconnects and resumes
   delivery) E2E fixtures, each with a matching CI job — see "CI/CD" below.
+- **`Supervisor.shutdown()`**: cancels every actor this `Supervisor`
+  spawned and waits for them to stop, without affecting actors spawned by
+  a different `Supervisor` on the same `Node`. See "Fixed" below for why
+  this — and `Node.stop()` now doing the equivalent for every `Supervisor`
+  on a node — matters.
+- **`ActorRef.ask(msg, timeout=5.0)` / `RemoteRef.ask(msg, timeout=5.0)`**:
+  request/response on top of `send()`'s existing `reply_to`/
+  `correlation_id` — tags the send, waits for a single correlated reply
+  (registering a one-shot hidden mailbox as the reply address, cleaned up
+  afterwards either way), and raises `TimeoutError` if nothing replies in
+  time. The receiving handler still has to reply explicitly — see
+  `MessageMeta.reply()` next.
+- **`MessageMeta.reply(msg)`**: shortcut for replying to whoever sent the
+  message a handler is currently processing — `current_message().reply(x)`
+  instead of manually building an `ActorRef`/`RemoteRef` from `meta.src`/
+  `meta.reply_to` and tagging `correlation_id` by hand. Raises
+  `RuntimeError` if `reply_to` is `None`. `MessageMeta` gained a `node`
+  field (the `Node` that received the message) to make this possible.
 
 ### Fixed
 
@@ -136,6 +154,18 @@ changes.
   blocked task; the Python queue is boundable via the new
   `mailbox_capacity` (above), with the same drop-and-notify behavior once
   set. Both default to unchanged behavior unless configured.
+- **Every actor task leaked on `Node.stop()`.** `Supervisor` had no
+  `stop()`/`shutdown()` of any kind, and `Node.stop()` never touched the
+  actor tasks it had spawned — each one was left running forever, blocked
+  reading from a mailbox nothing would ever fill again (the mailbox itself
+  was cleared, but the task waiting on it was not). `Node.stop()` now
+  cancels every actor task from any `Supervisor` on that node; the new
+  `Supervisor.shutdown()` does the same for just its own actors. As part
+  of this, `Supervisor._watchers` — which tracked spawned tasks but never
+  pruned finished ones, a real if narrower leak for a `Supervisor` that
+  spawns many short-lived actors over its life (e.g. a worker-pool
+  pattern) — now self-prunes via `add_done_callback` the moment a task
+  ends, for any reason.
 
 ### CI/CD
 

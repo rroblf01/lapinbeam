@@ -24,7 +24,7 @@ class Supervisor:
         self.max_restarts = max_restarts
         self.restart_window = restart_window
         self._restart_times = []
-        self._watchers = []
+        self._watchers = set()
 
     @property
     def node(self):
@@ -44,8 +44,23 @@ class Supervisor:
         node.register_actor(name, mailbox)
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._watch(node, name, actor_cls, args, kwargs, mailbox))
-        self._watchers.append(task)
+        self._watchers.add(task)
+        task.add_done_callback(self._watchers.discard)
+        node._register_task(task)
         return ActorRef(node, name, task=task)
+
+    async def shutdown(self):
+        """Cancels every actor this `Supervisor` spawned and waits for them
+        to stop. Safe to call more than once. Actors spawned by a different
+        `Supervisor` on the same `Node` are unaffected — to stop all actors
+        on a node regardless of which `Supervisor` spawned them, use
+        `Node.stop()`.
+        """
+        tasks = list(self._watchers)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _watch(self, node, name, actor_cls, args, kwargs, first_mailbox):
         mailbox = first_mailbox
