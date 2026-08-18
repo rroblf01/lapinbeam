@@ -121,7 +121,7 @@ jobs:
   # `mkdocs build` only ever ran as part of the deploy-to-Pages job below.
   docs-validate:
     name: build & validate docs
-    needs: [test]
+    needs: [test, test-cross-platform, rust-checks, typecheck]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
