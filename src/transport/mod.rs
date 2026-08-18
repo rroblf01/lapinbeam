@@ -641,13 +641,18 @@ impl Transport {
     async fn route(&self, from: NodeId, msg: WireMessage) {
         match msg.kind {
             MessageKind::Handshake => {}
-            MessageKind::Heartbeat => {
-                let handle = self.peers.read().await.get(&from).cloned();
-                if let Some(h) = handle {
-                    let reply = WireMessage::heartbeat(self.next_msg_id(), self.local.to_full());
-                    let _ = h.send(reply).await;
-                }
-            }
+            // A received heartbeat needs no reply: both sides already run
+            // their own independent `heartbeat_loop`, proactively sending
+            // on their own `heartbeat_interval` schedule — that alone is
+            // what resets the *other* side's `peer_timeout` (any successful
+            // `read()`, heartbeat or not, does that). Replying used to send
+            // back a frame that looks exactly like a fresh heartbeat to the
+            // other side, which replied in turn, which looked like a fresh
+            // heartbeat here, and so on — an unbounded ping-pong storm
+            // between every connected pair, bounded only by scheduler/
+            // network speed, that alone was measured pinning ~80% of a CPU
+            // core for two otherwise-idle connected nodes doing nothing.
+            MessageKind::Heartbeat => {}
             MessageKind::Data => {
                 let mailbox = self.routing.read().await.get(&msg.dst_actor).cloned();
                 match mailbox {

@@ -413,6 +413,55 @@ async fn heartbeat_keeps_connection_alive() {
 }
 
 #[tokio::test]
+async fn heartbeat_is_not_echoed_back() {
+    // A received heartbeat used to be answered with another heartbeat —
+    // indistinguishable on the wire from a fresh, proactive one — so the
+    // reply triggered a reply on the other side, which triggered a reply
+    // here, forever: an unbounded ping-pong between every connected pair,
+    // bounded only by scheduler/network speed. Measured pinning ~80% of a
+    // CPU core for two otherwise completely idle connected nodes. Fixed by
+    // not replying at all: both sides already run their own independent
+    // `heartbeat_loop` on their own schedule, and any successful `read()` —
+    // heartbeat or not — is what resets the *other* side's `peer_timeout`.
+    // `heartbeat_interval` set far longer than this test waits: node_a
+    // also runs its own *proactive* `heartbeat_loop` toward this peer
+    // regardless of what it receives, and a real reply must not be
+    // confused with that independent, regularly-scheduled traffic — this
+    // is why `fast_config()` (50ms) isn't used here.
+    let long_config = TransportConfig {
+        heartbeat_interval: Duration::from_secs(30),
+        peer_timeout: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), long_config)
+        .await
+        .unwrap();
+
+    let mut sock = TcpStream::connect(node_a.local_id().address())
+        .await
+        .unwrap();
+    let ghost = NodeId::parse("ghost@127.0.0.1:9999").unwrap();
+    sock.write_all(&encode_frame(&WireMessage::handshake(1, ghost.to_full())).unwrap())
+        .await
+        .unwrap();
+    wait_until(|| async { node_a.has_peer(&ghost).await }).await;
+
+    sock.write_all(&encode_frame(&WireMessage::heartbeat(2, ghost.to_full())).unwrap())
+        .await
+        .unwrap();
+
+    // No reply should arrive within a window comfortably longer than one
+    // loopback round trip (and far shorter than the 30s heartbeat_interval
+    // above, so this can't be confused with node_a's own proactive one).
+    let mut buf = [0u8; 64];
+    let result = tokio::time::timeout(Duration::from_millis(300), sock.read(&mut buf)).await;
+    assert!(
+        result.is_err(),
+        "node_a replied to a heartbeat it should have silently accepted"
+    );
+}
+
+#[tokio::test]
 async fn silent_peer_is_disconnected() {
     let node_a = Transport::listen(NodeId::parse("node_a@127.0.0.1:0").unwrap(), fast_config())
         .await

@@ -1,0 +1,26 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "archive"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "lapinbeam" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lapinbeam", specifier = ">=1.0.2" }]
+
+[[package]]
+name = "lapinbeam"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/c9/083e0aa0a1cc7c2a73e46cf3f8ed60430ce8cacf6574b0a3f8ce477f7bb0/lapinbeam-1.0.2.tar.gz", hash = "sha256:5bf829d335131905161939dd141031fdef00aab13284336cbd07aff782264c81", size = 184578, upload-time = "2026-08-18T07:43:04.972Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/69/9793c8a4684fae236f704ca17f6d24f093aeccddc765fb40771516351da3/lapinbeam-1.0.2-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:000aad1f2399957d32566978ac29fe44bcde6d4b21552044ea3334153819c03c", size = 1058025, upload-time = "2026-08-18T07:42:59.592Z" },
+    { url = "https://files.pythonhosted.org/packages/50/c0/9a87875a3baff759b6d225b8c05183f5f4afcbc96006fd677c387efa5f3a/lapinbeam-1.0.2-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:1a22cf3cdb254df13b3dad553594e75a797f1d014ed3ea7c2a3c642bb89e7127", size = 1041443, upload-time = "2026-08-18T07:43:01.076Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/57/7057ba9d43702befc2ec9a358f578e23ae2d0743f6b68df99fd569dbf093/lapinbeam-1.0.2-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1b82f08ad8316700ee6182eca47dadb14bb6cd365990660ac7bbe50b8fed1d6d", size = 1159842, upload-time = "2026-08-18T07:43:02.338Z" },
+    { url = "https://files.pythonhosted.org/packages/64/58/53bbbc9cb0213546cb6209b1bd76da0b602a6bd3c3f72369b2eb6f0797f7/lapinbeam-1.0.2-cp311-abi3-win_amd64.whl", hash = "sha256:47fc184d7606de8aed0828497e161cda77fb84f9da0f1051f60a7b20adc34955", size = 953020, upload-time = "2026-08-18T07:43:03.736Z" },
+]

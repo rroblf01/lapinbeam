@@ -8,6 +8,30 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-18
+
+### Fixed
+
+- **Critical: every connected pair of nodes was burning 70-140% of a CPU
+  core doing nothing.** `Transport::route`'s `Heartbeat` handler replied to
+  every received heartbeat with another heartbeat — a frame indistinguishable
+  on the wire from a fresh, proactive one — so the reply triggered a reply
+  on the other side, which triggered a reply here, forever: an unbounded
+  ping-pong between every connected pair, bounded only by scheduler/network
+  speed, running from the moment two nodes connect and never stopping.
+  Discovered while measuring baseline resource usage for the new
+  `examples/police_investigation/` demo, where three otherwise-idle
+  containers each showed 70-140% CPU at rest instead of the expected ~0%.
+  Confirmed independently of that example with a plain two-node idle check
+  (`node_a.connect_peer(node_b)`, then 10s of doing nothing): ~78% of one
+  CPU core, dropping to 0.0% after the fix. A heartbeat now needs no reply
+  at all — both sides already run their own independent `heartbeat_loop` on
+  their own schedule, and any successful `read()` (heartbeat or not) is
+  what resets the *other* side's `peer_timeout`, so nothing was actually
+  lost by not echoing. This affects every deployment with 2+ connected
+  nodes, present since the heartbeat mechanism was introduced — not
+  something introduced by other fixes in this file.
+
 ## [1.0.2] - 2026-08-18
 
 ### Fixed
