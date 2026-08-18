@@ -59,6 +59,19 @@ lightweight, opt-in **shared-secret handshake check**:
 node = Node("app@0.0.0.0:9001", cluster_secret="a-secret-only-your-cluster-knows")
 ```
 
+`0.0.0.0` above is a stand-in you should generally replace: the host in
+`node_name` is both the interface `Node` binds its listener to *and* the
+identity it advertises in every handshake — there's no separate "bind on
+every interface, but tell peers to reach me at this other address" setting.
+`0.0.0.0` only makes sense when every peer that will ever see it is on the
+*same* machine (all talking over loopback); across real hosts, a peer that
+tries to dial a node back using its self-reported `0.0.0.0` identity is
+dialing a non-address — on Linux this typically connects to `127.0.0.1`
+instead (silently wrong on any other host), and on other platforms it can
+fail outright. For a real multi-host cluster, put the node's actual
+reachable host or DNS name (a LAN IP, a container's service name, etc.) in
+`node_name` instead — e.g. `Node("app@node-a.internal:9001")`.
+
 Every node in the cluster must be started with the *same* `cluster_secret`.
 On connect, the dialer proves it knows the secret (a random nonce plus its
 `HMAC-SHA256`); if the acceptor's secret doesn't produce the same proof, the

@@ -10,6 +10,7 @@ hardware antes de tomar una decisión basada en ellas:
 uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # percentiles de RTT
 uv run python bench/bench_codec.py    # ruta de codec + conversión JSON, capa a capa
+uv run python bench/bench_memory.py   # RSS bajo carga sostenida, churn de conexiones y backpressure de mailbox
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -75,6 +76,34 @@ sobre la misma conexión TCP multiplexada — esta es la cifra a comparar
 contra un round trip mediado por un broker (ver
 [lapinbeam frente a Celery + RabbitMQ](vs-celery-rabbitmq.md)).
 
+## Memoria (`bench_memory.py`)
+
+A diferencia de los benchmarks de throughput/latencia/codec de arriba, este
+no da una cifra única que comparar — muestrea la RSS de este proceso
+(`VmRSS` de `/proc/self/status`, **solo Linux**) a lo largo de tres
+escenarios más largos e imprime si se estabiliza (sano) o sigue creciendo
+(una fuga):
+
+1. **Tráfico sostenido local + remoto** — la RSS debería estabilizarse en
+   los primeros segundos y quedarse plana.
+2. **Churn rápido de `connect_peer()`/`forget_peer()`**, ejecutado en
+   varias rondas seguidas — una fuga real por ciclo sigue añadiendo
+   aproximadamente lo mismo cada ronda; un comportamiento sano se aplana
+   después de la primera.
+3. **Un actor en bucle de caída permanente**, una vez con el buzón sin
+   límite por defecto y otra con `mailbox_capacity` configurado —
+   demuestra que la limitación de "buzones sin límite" (ver
+   [Limitaciones](index.es.md#limitaciones)) es trivial de disparar de
+   verdad (basta un consumidor lento o que se cae en bucle) y que
+   `mailbox_capacity` de verdad la acota, disparando
+   `on_event(kind="mailbox_full")` en vez de crecer para siempre.
+
+Los valores absolutos de RSS dependen mucho de la máquina y no tiene
+sentido compararlos entre ejecuciones o hardware — lo que importa es la
+*forma* de la curva de cada escenario (plana frente a creciente), por eso
+este script imprime una serie de muestras en vez de un único par
+antes/después.
+
 ## Cómo leer estas cifras correctamente
 
 - **Solo loopback.** Nada de esto mide latencia de red real entre hosts
@@ -83,10 +112,11 @@ contra un round trip mediado por un broker (ver
   propio de lapinbeam. Loopback es justo lo que aísla el coste del
   framework del coste de la red. Ver [Ejemplos](examples.md) para correr
   nodos entre hosts reales.
-- **Un solo peer, un solo actor.** Estos benchmarks no ejercitan múltiples
-  peers concurrentes, backpressure de mailbox, ni muchos actores
+- **Un solo peer, un solo actor.** Los benchmarks de throughput/latencia/
+  codec no ejercitan múltiples peers concurrentes ni muchos actores
   multiplexados sobre una conexión — aíslan el coste en el mejor caso de un
-  único envío.
+  único envío. `bench_memory.py` es la excepción: ejercita específicamente
+  el churn de conexiones y el backpressure de mailbox.
 - **No hay una comparación ejecutada contra Celery+RabbitMQ en este
   repositorio.** La comparación cualitativa de latencia en la página
   [frente a Celery + RabbitMQ](vs-celery-rabbitmq.md) (salto por broker

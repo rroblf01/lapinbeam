@@ -432,18 +432,37 @@ impl Transport {
         let mut decoder = FrameDecoder::new();
         let mut read_buf = [0u8; 4096];
         let mut registered: Option<(NodeId, PeerHandle)> = pre_known;
+        let mut events = self.events.subscribe();
 
         'read_loop: loop {
-            let read_result =
-                tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)).await;
-            let n = match read_result {
-                Err(_elapsed) => break,
-                Ok(Err(e)) => {
-                    tracing::debug!(%e, "read error, dropping connection");
-                    break;
+            // The event-watching branch only matters once `registered` is
+            // known (before that, nothing could have forgotten us yet) —
+            // guarded off entirely otherwise so it's never polled for an
+            // as-yet-unregistered inbound connection still mid-handshake.
+            // Reacting to our own `PeerDisconnected` here (fired by
+            // `forget_peer()`) is what makes it actually "drop the
+            // connection now" instead of leaving this task blocked on
+            // `read_half.read()` for up to `peer_timeout` waiting for the
+            // remote to notice and hang up first.
+            let n = tokio::select! {
+                result = tokio::time::timeout(self.config.peer_timeout, read_half.read(&mut read_buf)) => {
+                    match result {
+                        Err(_elapsed) => break,
+                        Ok(Err(e)) => {
+                            tracing::debug!(%e, "read error, dropping connection");
+                            break;
+                        }
+                        Ok(Ok(0)) => break, // EOF
+                        Ok(Ok(n)) => n,
+                    }
                 }
-                Ok(Ok(0)) => break, // EOF
-                Ok(Ok(n)) => n,
+                ev = events.recv(), if registered.is_some() => {
+                    let us = registered.as_ref().map(|(id, _)| id);
+                    if matches!(&ev, Ok(Event::PeerDisconnected(p)) if Some(p) == us) {
+                        break 'read_loop;
+                    }
+                    continue;
+                }
             };
 
             let frames = match decoder.decode(&read_buf[..n]) {
@@ -677,8 +696,29 @@ impl Transport {
 
     /// Periodic heartbeat sender for a peer. Exits when the peer is gone.
     async fn heartbeat_loop(&self, peer: NodeId) {
+        let mut events = self.events.subscribe();
         loop {
-            tokio::time::sleep(self.config.heartbeat_interval).await;
+            // Waits for whichever comes first: the heartbeat interval
+            // elapsing, or a `PeerDisconnected` for this exact peer (fired
+            // by `forget_peer()` or by `read_loop` noticing EOF/timeout).
+            // Without this, a peer forgotten right after connecting (e.g.
+            // rapid `connect_peer()`/`forget_peer()` churn) left this task
+            // idling for up to a full `heartbeat_interval` before it ever
+            // rechecked `self.peers` and noticed it was pointless —
+            // wasted, if bounded, memory and scheduler pressure under churn.
+            let sleep = tokio::time::sleep(self.config.heartbeat_interval);
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => break,
+                    ev = events.recv() => {
+                        if matches!(&ev, Ok(Event::PeerDisconnected(p)) if p == &peer) {
+                            return;
+                        }
+                        continue;
+                    }
+                }
+            }
             let handle = self.peers.read().await.get(&peer).cloned();
             let Some(handle) = handle else { return };
             let hb = WireMessage::heartbeat(self.next_msg_id(), self.local.to_full());

@@ -12,8 +12,8 @@
 //! an arbitrary process reaching the listening port can no longer register
 //! itself as a peer just by claiming an id.
 
-use hmac::{Hmac, Mac};
-use rand::RngCore;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -26,7 +26,7 @@ const PROOF_LEN: usize = 32; // HMAC-SHA256 output size
 /// [`verify_proof`] using the same secret.
 pub fn build_proof(secret: &[u8]) -> Vec<u8> {
     let mut nonce = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
     mac.update(&nonce);
     let proof = mac.finalize().into_bytes();

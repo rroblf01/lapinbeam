@@ -11,7 +11,7 @@ Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.g
 
 ## Status
 
-`1.0.1` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+`1.0.2` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
 `RemoteRef`, `codec`) is stable; a breaking change now requires a major
 version bump. This hasn't been run at production scale yet — see
 [Limitations](#limitations) below for what it deliberately doesn't do.
@@ -98,6 +98,7 @@ cargo test                    # Rust test suite
 uv run python bench/bench_remote.py   # throughput benchmarks
 uv run python bench/bench_latency.py  # RTT latency percentiles
 uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
+uv run python bench/bench_memory.py   # RSS under sustained load, connection churn, and mailbox backpressure
 ```
 
 Nothing is installed on the OS: everything lives in `.venv`.

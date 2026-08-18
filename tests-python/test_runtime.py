@@ -330,6 +330,34 @@ async def test_forget_peer_drops_connection_and_stops_reconnecting():
         await node_b.stop()
 
 
+async def test_forget_peer_closes_the_socket_promptly_not_after_peer_timeout():
+    # `forget_peer()` documents "drops that connection now". Before
+    # `read_loop`/`heartbeat_loop` reacted to `PeerDisconnected` instead of
+    # only polling on their own schedule, that wasn't true: the socket (and
+    # its task) stayed alive until `peer_timeout` elapsed with no data —
+    # under fast connect/forget churn, a real leaked fd per cycle, not a
+    # cosmetic one. `peer_timeout`/`heartbeat_interval` are set far longer
+    # than this test waits, so passing can only mean it closed promptly.
+    events = []
+    node_a = Node("node_a@127.0.0.1:0", heartbeat_interval=30.0, peer_timeout=30.0)
+    node_b = Node("node_b@127.0.0.1:0", heartbeat_interval=30.0, peer_timeout=30.0)
+    await node_a.start()
+    await node_b.start()
+    try:
+        node_b.on_event(events.append)
+        await node_a.connect_peer(node_b.local_id)
+        await wait_until(lambda: node_b.has_peer(node_a.local_id))
+
+        node_a.forget_peer(node_b.local_id)
+
+        await wait_until(
+            lambda: any(e["kind"] == "peer_disconnected" for e in events), timeout=3.0
+        )
+    finally:
+        await node_a.stop()
+        await node_b.stop()
+
+
 async def test_on_event_surfaces_reconnect_gave_up():
     events = []
 

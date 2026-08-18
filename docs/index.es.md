@@ -60,6 +60,21 @@ plano, legible por cualquiera que pueda observar la red. Sí tiene una
 node = Node("app@0.0.0.0:9001", cluster_secret="un-secreto-que-solo-conoce-tu-cluster")
 ```
 
+El `0.0.0.0` de arriba es un ejemplo que normalmente deberías sustituir: el
+host de `node_name` es a la vez la interfaz en la que `Node` escucha *y* la
+identidad que anuncia en cada handshake — no existe una opción separada de
+"escucha en todas las interfaces, pero dile a los peers que me busquen en
+esta otra dirección". `0.0.0.0` solo tiene sentido cuando todos los peers
+que vayan a verlo están en la *misma* máquina (hablando por loopback); entre
+máquinas reales, un peer que intente volver a marcar usando la identidad
+autoanunciada `0.0.0.0` está marcando una dirección inválida — en Linux esto
+suele conectar con `127.0.0.1` en su lugar (silenciosamente incorrecto en
+cualquier otra máquina), y en otras plataformas puede fallar directamente.
+Para un clúster real de varias máquinas, pon en `node_name` el host o
+nombre DNS realmente alcanzable del nodo (una IP de LAN, el nombre de
+servicio de un contenedor, etc.) — por ejemplo
+`Node("app@node-a.internal:9001")`.
+
 Cada nodo del clúster debe arrancar con el *mismo* `cluster_secret`. Al
 conectar, quien marca demuestra que conoce el secreto (un nonce aleatorio
 más su `HMAC-SHA256`); si el secreto de quien acepta no produce la misma

@@ -10,6 +10,7 @@ before making a decision based on them:
 uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # RTT percentiles
 uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
+uv run python bench/bench_memory.py   # RSS under sustained load, connection churn, and mailbox backpressure
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -72,6 +73,30 @@ replies to node A over the same multiplexed TCP connection — this is the
 number to compare against a broker-mediated round trip (see
 [lapinbeam vs. Celery + RabbitMQ](vs-celery-rabbitmq.md)).
 
+## Memory (`bench_memory.py`)
+
+Unlike the throughput/latency/codec benchmarks above, this doesn't report a
+single number to compare — it samples this process's RSS (`VmRSS` from
+`/proc/self/status`, **Linux only**) across three longer-running scenarios
+and prints whether it plateaus (healthy) or keeps climbing (a leak):
+
+1. **Sustained local + remote traffic** — RSS should level off within the
+   first few seconds and stay flat.
+2. **Rapid `connect_peer()`/`forget_peer()` churn**, run as several
+   back-to-back rounds — a real per-cycle leak keeps adding roughly the
+   same amount every round; healthy behavior plateaus after the first one.
+3. **A permanently crash-looping actor**, once with the default unbounded
+   mailbox and once with `mailbox_capacity` set — demonstrates that the
+   "unbounded mailboxes" limitation (see [Limitations](index.md#limitations))
+   is trivial to hit for real (a slow or crash-looping consumer is enough)
+   and that `mailbox_capacity` actually bounds it, firing
+   `on_event(kind="mailbox_full")` instead of growing forever.
+
+Absolute RSS values depend heavily on the machine and are not meaningful to
+compare across runs or hardware — what matters is the *shape* of each
+scenario's curve (flat vs. climbing), which is why this script prints a
+running series of samples rather than a single before/after pair.
+
 ## Reading these numbers correctly
 
 - **Loopback only.** None of this measures real network latency between
@@ -79,9 +104,11 @@ number to compare against a broker-mediated round trip (see
   nodes are on different machines, not by lapinbeam's own overhead.
   Loopback is what isolates the framework's cost from the network's.
   See [Examples](examples.md) for running nodes across real hosts.
-- **Single peer, single actor.** These benchmarks don't exercise multiple
-  concurrent peers, mailbox backpressure, or many actors multiplexed over
+- **Single peer, single actor.** The throughput/latency/codec benchmarks
+  don't exercise multiple concurrent peers or many actors multiplexed over
   one connection — they isolate the best-case cost of one send.
+  `bench_memory.py` is the exception: it specifically exercises connection
+  churn and mailbox backpressure.
 - **No comparison run against Celery+RabbitMQ in this repository.** The
   qualitative latency comparison on the [vs. Celery + RabbitMQ](vs-celery-rabbitmq.md)
   page (broker hop typically single-digit-to-tens of milliseconds) is a

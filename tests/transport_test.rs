@@ -874,3 +874,60 @@ async fn forget_peer_drops_connection_and_stops_reconnecting() {
         "a forgotten peer must not be auto-reconnected"
     );
 }
+
+#[tokio::test]
+async fn forget_peer_closes_the_socket_promptly_not_after_peer_timeout() {
+    // `forget_peer()`'s own docs promise it "drops that connection now".
+    // Before `read_loop`/`heartbeat_loop` reacted to `PeerDisconnected`
+    // instead of only polling `self.peers` on their own schedule, that
+    // wasn't true: removing the map entry didn't touch the actual TCP
+    // socket at all — the still-alive `read_loop` task (which owns the
+    // read half, and keeps a `PeerHandle` clone alive that in turn keeps
+    // the writer task and its write half alive) just kept blocking on
+    // `read()` until nothing arrived for a full `peer_timeout`. Under fast
+    // connect/forget churn that meant a real leaked socket (and fd) per
+    // cycle for up to that long, not a cosmetic one.
+    //
+    // `peer_timeout`/`heartbeat_interval` are set far longer than this
+    // test waits, so passing here can only mean the socket closed
+    // promptly on its own — not that the test simply outlasted the old
+    // slow path.
+    let long_config = TransportConfig {
+        heartbeat_interval: Duration::from_secs(30),
+        peer_timeout: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let node_a = Transport::listen(
+        NodeId::parse("node_a@127.0.0.1:0").unwrap(),
+        long_config.clone(),
+    )
+    .await
+    .unwrap();
+    let node_b = Transport::listen(NodeId::parse("node_b@127.0.0.1:0").unwrap(), long_config)
+        .await
+        .unwrap();
+    let a_id = node_a.local_id();
+    let b_id = node_b.local_id();
+
+    node_a.connect(b_id.clone()).await.unwrap();
+    wait_until(|| async { node_b.has_peer(&a_id).await }).await;
+
+    let b_events = node_b.event_stream();
+    node_a.forget_peer(&b_id).await;
+
+    // node_b — the *other* side, which never called forget_peer itself —
+    // must notice node_a hung up well within a couple of seconds, not
+    // anywhere close to the configured 30s peer_timeout.
+    let disconnected = tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_for_event(b_events, |ev| matches!(ev, Event::PeerDisconnected(_))),
+    )
+    .await;
+    match disconnected {
+        Ok(Event::PeerDisconnected(id)) => assert_eq!(id, a_id),
+        Ok(other) => panic!("expected PeerDisconnected, got {other:?}"),
+        Err(_) => panic!(
+            "node_b did not see node_a disconnect within 3s — forget_peer() left the socket open"
+        ),
+    }
+}

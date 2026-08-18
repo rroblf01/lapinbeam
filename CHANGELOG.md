@@ -8,6 +8,41 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-18
+
+### Fixed
+
+- **`hmac`/`sha2`/`rand` dependency bump broke the build.** A routine
+  Dependabot merge (`rand` 0.8→0.10, `hmac` 0.12→0.13, `sha2` 0.10→0.11)
+  landed on `main` without building: `rand::thread_rng()` was renamed to
+  `rand::rng()`, `RngCore` moved out of `rand`'s root re-exports, and
+  `Hmac::new_from_slice` now needs `hmac::KeyInit` imported explicitly.
+  Fixed in `src/wire/auth.rs` (the `cluster_secret` handshake) with no
+  behavior change — re-verified with a real two-container
+  `docker-compose.secure.yml` run (100/100 ACKs with a matching secret).
+- **`forget_peer()` didn't actually close the connection "now", as
+  documented.** Removing a peer from `Transport`'s internal maps doesn't by
+  itself touch the live socket: `heartbeat_loop` only rechecked whether its
+  peer still existed once per `heartbeat_interval` (default 1s), and
+  `read_loop` only noticed via the *remote* side reciprocating a close (or,
+  failing that, its own `peer_timeout`, default 3s) — so the real TCP
+  socket, its task, and its file descriptor stayed alive for up to that
+  long after being "forgotten". Under rapid `connect_peer()`/
+  `forget_peer()` churn (e.g. frequent peer discovery/probing) this meant a
+  real leaked fd per cycle, not just idle memory — confirmed with
+  `bench/bench_memory.py`: RSS after 500 churn cycles dropped from a
+  growing ~24 MiB (plateauing only after 2-3 repeated rounds) to a flat
+  ~4 MiB that plateaus from the first round. Both loops now react
+  immediately to their own `Event::PeerDisconnected` instead of only
+  polling on their own schedule.
+
+### Added
+
+- **`bench/bench_memory.py`**: samples RSS across sustained traffic,
+  `connect_peer()`/`forget_peer()` churn, and a permanently crash-looping
+  actor with and without `mailbox_capacity` — a regression check for
+  memory behavior under load, not just throughput/latency.
+
 ## [1.0.1] - 2026-08-17
 
 A focused bug-fix pass following a full-codebase review of the `1.0.0`
