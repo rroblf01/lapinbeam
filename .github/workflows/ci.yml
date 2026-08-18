@@ -23,11 +23,11 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Build extension and install deps
         run: uv sync
         env:
@@ -59,11 +59,11 @@ jobs:
             python-version: "3.14"
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Build extension and install deps
         run: uv sync
       - name: Run Python tests
@@ -81,7 +81,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Check formatting
         run: cargo fmt --check
       - name: Clippy
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: mypy
         run: uv run --with mypy --no-project -- mypy lapinbeam/
 
@@ -108,7 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Build abi3 wheel and sdist
         run: uv build
       - uses: actions/upload-artifact@v7
@@ -125,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Install docs dependencies
         run: uv sync --group docs
       - name: Build site
@@ -154,7 +154,7 @@ jobs:
           name: site
           path: site/
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
       - name: Deploy to GitHub Pages
