@@ -48,6 +48,10 @@ want both in the same system.
   errors — no silent message drops.
 - Type-preserving payloads: `@dataclass` and Pydantic v2 models round-trip
   between nodes exactly as sent, via `lapinbeam.codec`.
+- Lightweight seed-node discovery (`lapinbeam.discovery`): a node needs the
+  address of one already-running node to transitively connect to everything
+  that node (and everything it knows about) is connected to — see
+  [Examples](examples.md#node-discovery-via-a-seed-node).
 
 ## Security
 

@@ -49,6 +49,11 @@ quieras los dos en el mismo sistema.
   errores de entrega — sin mensajes perdidos en silencio.
 - Payloads que preservan el tipo: los modelos `@dataclass` y Pydantic v2
   viajan entre nodos exactamente como se enviaron, vía `lapinbeam.codec`.
+- Descubrimiento ligero de nodos vía nodo semilla (`lapinbeam.discovery`):
+  un nodo solo necesita la dirección de un nodo ya en marcha para
+  conectarse transitivamente a todo lo que ese nodo (y todo lo que él a su
+  vez conoce) tiene conectado — ver
+  [Ejemplos](examples.es.md#descubrimiento-de-nodos-via-nodo-semilla).
 
 ## Seguridad
 

@@ -106,6 +106,49 @@ Dos cosas a tener en cuenta al salir de loopback:
   lapinbeam (submilisegundo); entre hosts reales tu suelo de latencia es lo
   que dé la red entre ellos, más ese overhead encima.
 
+## Una tubería multinodo detrás de una API HTTP
+
+`examples/police_investigation/` es un ejemplo más grande y realista que la
+demo de dos nodos de arriba: el envío de un formulario con FastAPI recorre
+**tres** contenedores/nodos separados (`api` → `investigator` → `archive`),
+cada uno con un salto de red real al siguiente, con el progreso reportado de
+vuelta al nodo de origen a medida que el caso pasa por cuatro actores
+encadenados localmente. Su README documenta una medición completa de CPU y
+RAM (en reposo y bajo carga) usando solo `docker`, `docker compose` y `uv`.
+
+```bash
+cd examples/police_investigation
+docker compose up --build
+```
+
+## Descubrimiento de nodos vía nodo semilla
+
+Todos los ejemplos de arriba configuran cada nodo con la dirección exacta de
+cada peer con el que necesita hablar — vale para dos o tres nodos, pero son
+hasta N·(N-1)/2 direcciones a configurar a mano para una malla de N.
+`lapinbeam.discovery` (ver la lista de [Características](index.es.md)) lo
+convierte en "cada nodo necesita una única dirección semilla compartida":
+conéctate a una semilla, pregúntale a quién conoce, conéctate también a
+esos, recursivamente, hasta que no aparezca nadie nuevo.
+
+```python
+from lapinbeam import Node, Supervisor, register_discovery, join_via_seeds
+
+node = Node("app@app:9001")
+await node.start()
+register_discovery(node, Supervisor(node=node))
+await join_via_seeds(node, seeds=["seed@seed:9000"])
+```
+
+`examples/seed_discovery/` ejecuta esto con cuatro contenedores — una
+semilla y tres nodos que solo conocen la dirección de la semilla — y
+muestra en los logs cómo los cuatro convergen en una malla completa:
+
+```bash
+cd examples/seed_discovery
+docker compose up --build
+```
+
 ## Recuperarse de un fallo
 
 `Supervisor` reinicia un actor cuyo `receive` (o handler `@on`) lance una

@@ -8,6 +8,20 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+### Added
+
+- **`lapinbeam.discovery`**: lightweight seed-node discovery —
+  `register_discovery(node, sup)` + `join_via_seeds(node, seeds)`. A node
+  needs to know the address of one already-running "seed" node; everything
+  else is learned by asking whatever it connects to "who else do you know
+  about?" and connecting to the answer too, recursively, until a full pass
+  turns up nothing new. No core changes — built entirely on the existing
+  public API (`ask()`/`current_message().reply()`, `on_event`). See
+  `examples/seed_discovery/` for a runnable 4-node demo and
+  `lapinbeam/discovery.py`'s module docstring for what this deliberately
+  doesn't handle (no continuous re-discovery, no membership/failure
+  detection beyond `peer_timeout`).
+
 ## [1.0.3] - 2026-08-18
 
 ### Fixed

@@ -105,6 +105,48 @@ Two things to plan for once you leave loopback:
   (sub-millisecond); across real hosts your latency floor is whatever the
   network between them gives you, plus that overhead on top.
 
+## A multi-node pipeline behind an HTTP API
+
+`examples/police_investigation/` is a bigger, more realistic example than
+the two-node demo above: a FastAPI form submission fans out across **three**
+separate node containers (`api` → `investigator` → `archive`), each doing a
+real network hop to the next, with progress tracked back to the originating
+node as the case moves through four chained local actors. Its README
+documents a full CPU/RAM measurement (idle vs. under load) using nothing but
+`docker`, `docker compose`, and `uv`.
+
+```bash
+cd examples/police_investigation
+docker compose up --build
+```
+
+## Node discovery via a seed node
+
+Every example above configures each node with the exact address of every
+peer it needs — fine for two or three nodes, but that's up to N·(N-1)/2
+addresses to hand-configure for a mesh of N. `lapinbeam.discovery` (see the
+[Features](index.md) list) turns that into "every node needs one shared seed
+address": connect to a seed, ask it who it knows, connect to those too,
+recursively, until nothing new turns up.
+
+```python
+from lapinbeam import Node, Supervisor, register_discovery, join_via_seeds
+
+node = Node("app@app:9001")
+await node.start()
+register_discovery(node, Supervisor(node=node))
+await join_via_seeds(node, seeds=["seed@seed:9000"])
+```
+
+`examples/seed_discovery/` runs this across four containers — one seed and
+three joiners that only ever hear the seed's address — and shows all four
+converging on a full mesh in the logs:
+
+```bash
+cd examples/seed_discovery
+docker compose up --build
+```
+
 ## Recovering from a crash
 
 `Supervisor` restarts an actor whose `receive` (or `@on` handler) raises,

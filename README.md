@@ -30,6 +30,8 @@ version bump. This hasn't been run at production scale yet — see
 - `ask()` request/response on top of fire-and-forget `send()`, and
   `on_event()` for connection/delivery/supervisor observability.
 - Optional shared-secret handshake authentication (`cluster_secret`).
+- Lightweight seed-node discovery (`register_discovery`/`join_via_seeds`) —
+  a node needs one already-running node's address, not every node's.
 
 ## Install
 
@@ -172,8 +174,9 @@ src/           Rust core (_core extension module)
 lapinbeam/     Pure-Python layer (@actor, Node, Supervisor, refs)
 tests/         Rust integration tests
 tests-python/  Python tests (pytest)
-examples/      Two-node bidirectional demo, plus E2E fixtures used by CI
-bench/         Throughput, latency and codec benchmarks
+examples/      Two-node bidirectional demo, a multi-node HTTP pipeline demo,
+               a seed-node discovery demo, plus E2E fixtures used by CI
+bench/         Throughput, latency, codec, and memory benchmarks
 ```
 
 ## License

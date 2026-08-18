@@ -1,0 +1,57 @@
+services:
+  seed:
+    build: .
+    container_name: seed_discovery_seed
+    environment:
+      - NODE_NAME=seed@seed:9000
+    networks:
+      - discovery-net
+    # NODE_NAME's host is also the interface the listener binds to (see
+    # docs/index.md's "Security" note in the main project) — since it's
+    # the container's own service name, the healthcheck has to dial that
+    # same name, not `localhost`.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('seed', 9000), timeout=2)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  node1:
+    build: .
+    container_name: seed_discovery_node1
+    environment:
+      - NODE_NAME=node1@node1:9001
+      - SEEDS=seed@seed:9000
+    depends_on:
+      seed:
+        condition: service_healthy
+    networks:
+      - discovery-net
+
+  node2:
+    build: .
+    container_name: seed_discovery_node2
+    environment:
+      - NODE_NAME=node2@node2:9002
+      - SEEDS=seed@seed:9000
+    depends_on:
+      seed:
+        condition: service_healthy
+    networks:
+      - discovery-net
+
+  node3:
+    build: .
+    container_name: seed_discovery_node3
+    environment:
+      - NODE_NAME=node3@node3:9003
+      - SEEDS=seed@seed:9000
+    depends_on:
+      seed:
+        condition: service_healthy
+    networks:
+      - discovery-net
+
+networks:
+  discovery-net:
+    driver: bridge
