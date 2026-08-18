@@ -147,6 +147,55 @@ cd examples/seed_discovery
 docker compose up --build
 ```
 
+## Supervision trees, links, and groups across real nodes
+
+`Supervisor.spawn_supervisor()` (nested supervision trees), `lapinbeam.links`
+(bidirectional links) and `lapinbeam.groups` (cluster-wide process groups)
+all work the same locally or across nodes, with no wire protocol changes
+for either — cross-node traffic for both rides as ordinary `Data` frames to
+a reserved local actor name, the same trick `lapinbeam.discovery` already
+uses:
+
+```python
+from lapinbeam import (
+    Exit, Node, Supervisor, actor, on,
+    link, trap_exit, register_links,
+    join_group, members, register_groups,
+)
+
+node = Node("app@app:9100")
+await node.start()
+sup = Supervisor(node=node)
+register_links(node, sup)
+register_groups(node, sup)
+
+
+@actor(name="watcher")
+class Watcher:
+    @on(Exit)
+    async def on_exit(self, msg):
+        print("linked actor exited:", msg.actor, msg.reason)
+
+
+ref = sup.spawn(Watcher)
+await node.connect_peer("worker@worker:9101")
+other = node.get_remote_actor("worker@worker:9101", "task_worker")
+# trap_exit() must run from inside the actor — e.g. its first handler call.
+await link(other)          # cross-node link, no core changes
+await join_group(node, "watchers", ref=ref)   # cluster-wide group membership
+print(members(node, "watchers"))              # -> [ActorRef/RemoteRef, ...]
+```
+
+`examples/cluster_supervision/` runs all three across three real
+containers — a `hub` with a nested supervision tree that links to two
+workers and watches a cluster-wide `"workers"` group as each one fails for
+good:
+
+```bash
+cd examples/cluster_supervision
+docker compose up --build
+```
+
 ## Recovering from a crash
 
 `Supervisor` restarts an actor whose `receive` (or `@on` handler) raises,

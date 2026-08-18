@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "lapinbeam"
-version = "1.0.3"
+version = "1.1.0"
 description = "Real-time distributed systems framework for Python with a Rust core (actor model, multiplexed TCP transport)"
 readme = "README.md"
 license = { text = "MIT" }

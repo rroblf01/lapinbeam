@@ -18,10 +18,10 @@ construido entero sobre la API pública que ya existía (`Node`, `@actor`,
 [`node_app.py`](node_app.py) — el código de demostración que lo usa.
 
 > **Nota:** `lapinbeam.discovery` es nuevo en el paquete y todavía no está
-> publicado en PyPI en el momento de escribir esto — hace falta una versión
-> de `lapinbeam` posterior a `1.0.3` (ver `CHANGELOG.md`). Hasta entonces,
-> `docker compose up --build` fallará con `ImportError` porque la versión
-> instalada desde PyPI no trae el módulo todavía.
+> publicado en PyPI en el momento de escribir esto — hace falta
+> `lapinbeam>=1.1.0` (ver `CHANGELOG.md`). Hasta entonces, `docker compose
+> up --build` fallará con `ImportError` porque la versión instalada desde
+> PyPI no trae el módulo todavía.
 
 ## Cómo funciona
 

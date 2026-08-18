@@ -8,6 +8,8 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-18
+
 ### Added
 
 - **`lapinbeam.discovery`**: lightweight seed-node discovery —
@@ -62,6 +64,13 @@ of `1.0.0`, a breaking change requires a major version bump.
   rest, and RSS stays flat under sustained churn (20k spawn/crash cycles,
   20k link/unlink cycles) — none of this adds a background loop, a timer,
   or periodic polling of any kind.
+- `examples/cluster_supervision/`: a real 3-container Docker Compose demo
+  (`hub` + two `worker`s) exercising all three additions together across
+  genuine TCP connections between separate processes — a nested
+  supervision tree, a cross-node link that delivers each worker's real
+  failure reason to the hub as an `Exit`, and a cluster-wide `"workers"`
+  group whose membership converges and shrinks live as each worker fails
+  for good — not just localhost pytest coverage.
 
 ## [1.0.3] - 2026-08-18
 

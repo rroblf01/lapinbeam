@@ -38,7 +38,8 @@ want both in the same system.
 - `@actor`-decorated Python classes with `async def receive(msg)`, or typed
   dispatch via `@on(Type)` / `@on(default=True)` — see
   [Typed messages](typed-messages.md).
-- `Supervisor` with restart strategies (`one_for_one`).
+- `Supervisor` with restart strategies (`one_for_one`, `one_for_all`,
+  `rest_for_one`).
 - `Node` with transparent remote actor references (`RemoteRef`) that look
   just like local ones (`ActorRef`).
 - Multiplexed TCP transport (one socket per peer) with bincode framing.
@@ -53,8 +54,7 @@ want both in the same system.
   that node (and everything it knows about) is connected to — see
   [Examples](examples.md#node-discovery-via-a-seed-node).
 - Nested supervision trees: `Supervisor.spawn_supervisor()` lets a
-  `Supervisor` supervise another `Supervisor`, and `strategy=` now also
-  accepts `"one_for_all"`/`"rest_for_one"` alongside `"one_for_one"`.
+  `Supervisor` supervise another `Supervisor`.
 - Bidirectional links (`lapinbeam.links`) and cluster-wide named process
   groups (`lapinbeam.groups`), both local- and cross-node — no wire
   protocol changes for either.

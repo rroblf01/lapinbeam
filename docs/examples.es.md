@@ -149,6 +149,56 @@ cd examples/seed_discovery
 docker compose up --build
 ```
 
+## Árboles de supervisión, links y grupos entre nodos reales
+
+`Supervisor.spawn_supervisor()` (árboles de supervisión anidados),
+`lapinbeam.links` (links bidireccionales) y `lapinbeam.groups` (grupos de
+proceso a nivel de clúster) funcionan igual en local o entre nodos, sin
+ningún cambio en el protocolo de red para ninguno de los dos — el tráfico
+entre nodos de ambos viaja como frames `Data` corrientes dirigidos a un
+actor local reservado, el mismo truco que ya usa `lapinbeam.discovery`:
+
+```python
+from lapinbeam import (
+    Exit, Node, Supervisor, actor, on,
+    link, trap_exit, register_links,
+    join_group, members, register_groups,
+)
+
+node = Node("app@app:9100")
+await node.start()
+sup = Supervisor(node=node)
+register_links(node, sup)
+register_groups(node, sup)
+
+
+@actor(name="watcher")
+class Watcher:
+    @on(Exit)
+    async def on_exit(self, msg):
+        print("el actor enlazado salió:", msg.actor, msg.reason)
+
+
+ref = sup.spawn(Watcher)
+await node.connect_peer("worker@worker:9101")
+other = node.get_remote_actor("worker@worker:9101", "task_worker")
+# trap_exit() debe llamarse desde dentro del actor — p.ej. en su primer
+# handler.
+await link(other)          # link entre nodos, sin cambios en el núcleo
+await join_group(node, "watchers", ref=ref)   # pertenencia a grupo, todo el clúster
+print(members(node, "watchers"))              # -> [ActorRef/RemoteRef, ...]
+```
+
+`examples/cluster_supervision/` ejecuta las tres cosas a la vez con tres
+contenedores reales — un `hub` con un árbol de supervisión anidado que se
+enlaza a dos workers y vigila un grupo `"workers"` a nivel de clúster
+mientras cada uno falla para siempre:
+
+```bash
+cd examples/cluster_supervision
+docker compose up --build
+```
+
 ## Recuperarse de un fallo
 
 `Supervisor` reinicia un actor cuyo `receive` (o handler `@on`) lance una

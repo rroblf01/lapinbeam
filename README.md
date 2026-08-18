@@ -11,7 +11,7 @@ Repository: <https://github.com/rroblf01/lapinbeam> · Docs: <https://rroblf01.g
 
 ## Status
 
-`1.0.3` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
+`1.1.0` — the public API (`Node`, `Supervisor`, `actor`/`on`, `ActorRef`/
 `RemoteRef`, `codec`) is stable; a breaking change now requires a major
 version bump. This hasn't been run at production scale yet — see
 [Limitations](#limitations) below for what it deliberately doesn't do.
@@ -20,7 +20,8 @@ version bump. This hasn't been run at production scale yet — see
 
 - `@actor` decorated Python classes with `async def receive(msg)`, or typed
   dispatch via `@on(Type)` / `@on(default=True)` (see below).
-- `Supervisor` with restart strategies (`one_for_one`).
+- `Supervisor` with restart strategies (`one_for_one`, `one_for_all`,
+  `rest_for_one`).
 - `Node` with transparent remote actor references.
 - Multiplexed TCP transport (one socket per peer) with bincode serialization.
 - Heartbeat and connection watchdog in the Rust core.
@@ -32,8 +33,8 @@ version bump. This hasn't been run at production scale yet — see
 - Optional shared-secret handshake authentication (`cluster_secret`).
 - Lightweight seed-node discovery (`register_discovery`/`join_via_seeds`) —
   a node needs one already-running node's address, not every node's.
-- Nested supervision trees (`Supervisor.spawn_supervisor`) with
-  `one_for_one`/`one_for_all`/`rest_for_one` restart strategies.
+- Nested supervision trees: `Supervisor.spawn_supervisor()` lets a
+  `Supervisor` supervise another `Supervisor`.
 - Bidirectional links (`link`/`unlink`/`trap_exit`) and cluster-wide named
   process groups (`join_group`/`leave_group`/`members`), local and
   cross-node, with no wire protocol changes for either.
@@ -180,7 +181,8 @@ lapinbeam/     Pure-Python layer (@actor, Node, Supervisor, refs)
 tests/         Rust integration tests
 tests-python/  Python tests (pytest)
 examples/      Two-node bidirectional demo, a multi-node HTTP pipeline demo,
-               a seed-node discovery demo, plus E2E fixtures used by CI
+               a seed-node discovery demo, a supervision-tree/links/groups
+               demo, plus E2E fixtures used by CI
 bench/         Throughput, latency, codec, and memory benchmarks
 ```
 
