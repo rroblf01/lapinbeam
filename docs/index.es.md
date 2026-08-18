@@ -54,6 +54,12 @@ quieras los dos en el mismo sistema.
   conectarse transitivamente a todo lo que ese nodo (y todo lo que él a su
   vez conoce) tiene conectado — ver
   [Ejemplos](examples.es.md#descubrimiento-de-nodos-via-nodo-semilla).
+- Árboles de supervisión anidados: `Supervisor.spawn_supervisor()` permite
+  que un `Supervisor` supervise a otro `Supervisor`, y `strategy=` ahora
+  también acepta `"one_for_all"`/`"rest_for_one"` además de `"one_for_one"`.
+- Links bidireccionales (`lapinbeam.links`) y grupos de proceso con nombre
+  a nivel de clúster (`lapinbeam.groups`), tanto locales como entre
+  nodos — sin cambios en el protocolo de red en ninguno de los dos casos.
 
 ## Seguridad
 

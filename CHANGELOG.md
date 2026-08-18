@@ -21,6 +21,47 @@ of `1.0.0`, a breaking change requires a major version bump.
   `lapinbeam/discovery.py`'s module docstring for what this deliberately
   doesn't handle (no continuous re-discovery, no membership/failure
   detection beyond `peer_timeout`).
+- **Nested supervision trees and two new restart strategies.**
+  `Supervisor.spawn_supervisor(name, build, *, strategy=, max_restarts=,
+  restart_window=)` spawns a nested `Supervisor` as a child of another,
+  returning a `SupervisorRef` — `await ref.task` blocks until that whole
+  subtree gives up, re-raising the original exception, recursively through
+  nested levels. `Supervisor(strategy=...)` now also accepts
+  `"one_for_all"` (a crash restarts every child, not just the one that
+  failed) and `"rest_for_one"` (restarts the crashed child and every child
+  spawned after it) alongside the existing `"one_for_one"`. Exceeding the
+  restart budget under `one_for_all`/`rest_for_one` tears down the whole
+  subtree, propagating to whatever supervises it; under `one_for_one`,
+  exactly as before, only the exhausted child itself gives up — unrelated
+  siblings are never affected, preserving the existing worker-pool
+  pattern. `ActorRef.task` is now a live property (was a frozen attribute)
+  so it keeps observing the right task after a sibling is swept into a
+  group restart it didn't cause itself. Pure Python — no Rust changes.
+- **`lapinbeam.links`**: bidirectional Erlang-style links —
+  `link(other)`/`unlink(other)`/`trap_exit()`, plus `current_actor_ref()`
+  ("who am I", usable from inside a running actor). If a linked actor
+  exits for good (not on an ordinary in-place restart), the other side
+  gets killed too through its own Supervisor's normal crash/restart path
+  — unless it called `trap_exit()`, in which case it receives an `Exit`
+  message instead. Works across nodes too (`link()` accepts a `RemoteRef`)
+  via `register_links(node, sup)` — no wire protocol changes: cross-node
+  link/exit traffic rides as ordinary `Data` frames to a reserved local
+  actor name, so a peer that hasn't called `register_links()` just answers
+  with an ordinary `actor_not_found` instead of breaking the connection.
+- **`lapinbeam.groups`**: cluster-wide named process groups —
+  `join_group(node, group)`/`leave_group(node, group)`/`members(node,
+  group)`, synced across every connected node via `register_groups(node,
+  sup)` (same reserved-actor trick as `links`, no wire changes).
+  Membership is pid-scoped like links: a restarted actor is dropped from
+  every group it was in and must explicitly rejoin (typically from
+  `__init__`) to stay a member across its own restarts.
+- Measured before shipping (see `tests-python/test_runtime.py`,
+  `test_links.py`, `test_groups.py`, and each module's own docstring for
+  the exact scenarios): a 3-level supervision tree, 50 cross-node linked
+  pairs, and a shared cluster-wide group all sit at effectively 0% CPU at
+  rest, and RSS stays flat under sustained churn (20k spawn/crash cycles,
+  20k link/unlink cycles) — none of this adds a background loop, a timer,
+  or periodic polling of any kind.
 
 ## [1.0.3] - 2026-08-18
 

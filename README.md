@@ -32,6 +32,11 @@ version bump. This hasn't been run at production scale yet — see
 - Optional shared-secret handshake authentication (`cluster_secret`).
 - Lightweight seed-node discovery (`register_discovery`/`join_via_seeds`) —
   a node needs one already-running node's address, not every node's.
+- Nested supervision trees (`Supervisor.spawn_supervisor`) with
+  `one_for_one`/`one_for_all`/`rest_for_one` restart strategies.
+- Bidirectional links (`link`/`unlink`/`trap_exit`) and cluster-wide named
+  process groups (`join_group`/`leave_group`/`members`), local and
+  cross-node, with no wire protocol changes for either.
 
 ## Install
 

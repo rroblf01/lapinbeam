@@ -44,6 +44,10 @@ class MessageMeta(NamedTuple):
 #: Bound by `Supervisor._drive` for the duration of each handler call.
 current = contextvars.ContextVar("lapinbeam_current_message", default=None)
 
+#: Bound by `Supervisor._drive` once per actor generation (construction to
+#: crash/exit), unlike `current` above which resets on every message.
+current_actor = contextvars.ContextVar("lapinbeam_current_actor", default=None)
+
 
 def current_message() -> Optional[MessageMeta]:
     """Metadata for the message the currently running code is processing.
@@ -63,3 +67,18 @@ def current_message() -> Optional[MessageMeta]:
     at module scope, before any message has been dispatched.
     """
     return current.get()
+
+
+def current_actor_ref():
+    """The `ActorRef` for the actor whose code is currently running.
+
+    Unlike `current_message()`, this is bound once per actor *generation*
+    (from construction until it crashes/exits) rather than reset on every
+    message — so it's stable across a whole `receive`/`@on` call and any
+    background task spawned from within one, for the actor's whole
+    lifetime. Used by `lapinbeam.links`' `link()`/`unlink()`/`trap_exit()`
+    to identify "who am I".
+
+    Returns `None` outside of any actor's context.
+    """
+    return current_actor.get()

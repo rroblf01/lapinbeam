@@ -507,10 +507,10 @@ async def test_on_event_surfaces_supervisor_gave_up():
         gave_up = next(e for e in events if e["kind"] == "supervisor_gave_up")
         assert gave_up["actor"] == "always_crash_ctor"
         assert "nope" in gave_up["detail"]
-        # The finished task must not linger in _watchers forever — this is
+        # The child record must not linger in _children forever — this is
         # what used to leak for a Supervisor that spawns many short-lived
         # actors over its life (e.g. a worker-pool pattern).
-        assert ref.task not in sup._watchers
+        assert not sup._children
     finally:
         await node.stop()
 
@@ -885,5 +885,187 @@ async def test_on_event_listener_exception_does_not_mask_supervisor_give_up():
         # with its own when `supervisor_gave_up` fires.
         with pytest.raises(RuntimeError, match="real crash reason"):
             await asyncio.wait_for(ref.task, timeout=5.0)
+    finally:
+        await node.stop()
+
+
+async def test_one_for_all_restarts_all_children_on_any_crash():
+    a_instances = []
+    b_instances = []
+
+    @actor(name="a_one_for_all")
+    class A:
+        def __init__(self):
+            a_instances.append(self)
+
+        async def receive(self, msg):
+            raise RuntimeError("boom")
+
+    @actor(name="b_one_for_all")
+    class B:
+        def __init__(self):
+            b_instances.append(self)
+
+        async def receive(self, msg):
+            pass
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(strategy="one_for_all", node=node, max_restarts=3)
+        ref_a = sup.spawn(A)
+        sup.spawn(B)
+        await ref_a.send({})
+        # B never crashed itself — one_for_all must restart it anyway.
+        await wait_until(lambda: len(a_instances) == 2)
+        await wait_until(lambda: len(b_instances) == 2)
+    finally:
+        await node.stop()
+
+
+async def test_rest_for_one_restarts_crashed_and_later_children():
+    a_instances = []
+    b_instances = []
+    c_instances = []
+
+    @actor(name="a_rest_for_one")
+    class A:
+        def __init__(self):
+            a_instances.append(self)
+
+        async def receive(self, msg):
+            pass
+
+    @actor(name="b_rest_for_one")
+    class B:
+        def __init__(self):
+            b_instances.append(self)
+
+        async def receive(self, msg):
+            raise RuntimeError("boom")
+
+    @actor(name="c_rest_for_one")
+    class C:
+        def __init__(self):
+            c_instances.append(self)
+
+        async def receive(self, msg):
+            pass
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(strategy="rest_for_one", node=node, max_restarts=3)
+        sup.spawn(A)
+        ref_b = sup.spawn(B)
+        sup.spawn(C)
+        await ref_b.send({})
+        # B crashed and C was spawned after it — both must be rebuilt.
+        await wait_until(lambda: len(b_instances) == 2)
+        await wait_until(lambda: len(c_instances) == 2)
+        # A was spawned before B — rest_for_one must leave it alone.
+        await asyncio.sleep(0.1)
+        assert len(a_instances) == 1
+    finally:
+        await node.stop()
+
+
+async def test_one_for_one_give_up_does_not_affect_siblings():
+    b_instances = []
+
+    @actor(name="a_solo_giveup")
+    class A:
+        async def receive(self, msg):
+            raise RuntimeError("a boom")
+
+    @actor(name="b_solo")
+    class B:
+        def __init__(self):
+            b_instances.append(self)
+
+        async def receive(self, msg):
+            pass
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node, max_restarts=1)
+        ref_a = sup.spawn(A)
+        ref_b = sup.spawn(B)
+        await ref_a.send({})
+        await ref_a.send({})
+        with pytest.raises(RuntimeError, match="a boom"):
+            await asyncio.wait_for(ref_a.task, timeout=5.0)
+        # B must be completely unaffected: same instance, still running —
+        # one_for_one never lets siblings affect each other, even when one
+        # of them gives up for good rather than merely restarting.
+        assert len(b_instances) == 1
+        assert not ref_b.task.done()
+    finally:
+        await node.stop()
+
+
+async def test_spawn_supervisor_give_up_propagates_to_supervisor_ref():
+    @actor(name="always_crash_nested")
+    class AlwaysCrash:
+        async def receive(self, msg):
+            raise RuntimeError("nested boom")
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    events = []
+    node.on_event(events.append)
+    refs = {}
+
+    def build(child_sup):
+        refs["actor"] = child_sup.spawn(AlwaysCrash)
+
+    try:
+        # max_restarts=0 on both levels: the nested actor's very first
+        # crash exhausts the nested supervisor's budget immediately, and
+        # that give-up exhausts the parent's own budget immediately too —
+        # no rebuild attempt in between, so a single crash is enough to
+        # observe the give-up propagate all the way to `sup_ref.task`.
+        sup = Supervisor(node=node, max_restarts=0)
+        sup_ref = sup.spawn_supervisor("worker_tree", build, max_restarts=0)
+        await wait_until(lambda: "actor" in refs)
+        await refs["actor"].send({})
+        with pytest.raises(RuntimeError, match="nested boom"):
+            await asyncio.wait_for(sup_ref.task, timeout=5.0)
+        await wait_until(lambda: any(e["kind"] == "supervisor_gave_up" for e in events))
+        # ActorRef.task still works correctly for an actor inside a nested
+        # tree — also retrieves its exception, so asyncio doesn't warn
+        # about it going unobserved (sup_ref.task and refs["actor"].task
+        # are two distinct Task objects for the same underlying failure).
+        with pytest.raises(RuntimeError, match="nested boom"):
+            await refs["actor"].task
+    finally:
+        await node.stop()
+
+
+async def test_parent_shutdown_cancels_nested_supervisor_grandchildren():
+    @actor(name="grandchild")
+    class Grandchild:
+        async def receive(self, msg):
+            await asyncio.sleep(1000)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    refs = {}
+
+    def build(child_sup):
+        refs["gc"] = child_sup.spawn(Grandchild)
+
+    try:
+        sup = Supervisor(node=node)
+        sup_ref = sup.spawn_supervisor("subtree", build)
+        await wait_until(lambda: "gc" in refs)
+        await refs["gc"].send({})
+        await asyncio.sleep(0.05)  # let it actually start blocking in receive()
+        await sup.shutdown()
+        assert refs["gc"].task.done()
+        assert refs["gc"].task.cancelled()
+        assert sup_ref.task.done()
+        assert sup_ref.task.cancelled()
     finally:
         await node.stop()

@@ -52,6 +52,12 @@ want both in the same system.
   address of one already-running node to transitively connect to everything
   that node (and everything it knows about) is connected to — see
   [Examples](examples.md#node-discovery-via-a-seed-node).
+- Nested supervision trees: `Supervisor.spawn_supervisor()` lets a
+  `Supervisor` supervise another `Supervisor`, and `strategy=` now also
+  accepts `"one_for_all"`/`"rest_for_one"` alongside `"one_for_one"`.
+- Bidirectional links (`lapinbeam.links`) and cluster-wide named process
+  groups (`lapinbeam.groups`), both local- and cross-node — no wire
+  protocol changes for either.
 
 ## Security
 

@@ -32,11 +32,28 @@ async def _ask(ref, msg, timeout):
 class ActorRef:
     """Reference to an actor living on the same node."""
 
-    def __init__(self, node, name, task=None):
+    def __init__(self, node, name, child=None):
         self._node = node
         self.name = name
-        # Watcher task driving the actor (used by the Supervisor).
-        self.task = task
+        # Internal: the Supervisor's live child record, if this ref was
+        # constructed by `Supervisor.spawn()`/`_run_actor_child` — `None`
+        # for a ref built for messaging purposes only (e.g.
+        # `MessageMeta.reply()`), which has no watcher task to expose.
+        self._child = child
+
+    @property
+    def task(self):
+        """The task currently driving this actor, or `None` if this ref
+        has no associated Supervisor child record.
+
+        A live lookup, not a value frozen at construction time: under
+        `one_for_all`/`rest_for_one`, a sibling swept into a group restart
+        gets a *new* task object, so a `ref` obtained before that restart
+        must still observe the current one — freezing `task` at spawn time
+        would make `await ref.task` wrongly raise `CancelledError` for a
+        healthy, successfully-restarted actor.
+        """
+        return self._child.task if self._child is not None else None
 
     async def send(self, msg, reply_to=None, correlation_id=None):
         """Fire-and-forget delivery of `msg` to the local actor.
@@ -98,3 +115,29 @@ class RemoteRef:
 
     def __repr__(self):
         return f"<RemoteRef {self.actor_name!r} at {self.peer_id!r}>"
+
+
+class SupervisorRef:
+    """Reference to a nested `Supervisor` spawned via
+    `Supervisor.spawn_supervisor()`."""
+
+    def __init__(self, child):
+        self._child = child
+
+    @property
+    def supervisor(self):
+        """The current live nested `Supervisor` instance — replaced (not
+        mutated) every time this subtree restarts, same rationale as
+        `ActorRef.task`."""
+        return self._child.supervisor
+
+    @property
+    def task(self):
+        """The task currently running this subtree. `await ref.task`
+        blocks until the whole subtree gives up, re-raising the original
+        exception that caused it — not a generic wrapper — recursively
+        through nested levels."""
+        return self._child.task
+
+    def __repr__(self):
+        return f"<SupervisorRef {self._child.name!r}>"

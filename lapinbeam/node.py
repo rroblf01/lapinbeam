@@ -76,6 +76,26 @@ class Node:
         self._event_listeners = []
         self._peer_waiters = {}
         self._actor_tasks = set()
+        # lapinbeam.links state — cheap to keep even if links are never
+        # used. `_links`: local actor name -> set of (peer_id, name)
+        # targets it's linked to (peer_id is None for a local target).
+        # `_trap_exit`: local actor name -> whether it wants exits
+        # delivered as an Exit message instead of being killed by them.
+        # `_live_children`: local actor name -> the Supervisor's live
+        # `_ActorChild` record, so a link-triggered exit can find (and
+        # cancel) the actual running task — populated/cleared by
+        # `Supervisor._run_actor_child` alongside `_mailboxes`.
+        self._links = {}
+        self._trap_exit = {}
+        self._live_children = {}
+        # lapinbeam.groups state — likewise cheap to keep unused.
+        # `_groups`: group name -> set of (origin_node_id, actor_name)
+        # members. `_group_leave_hook`, if `register_groups()` was called,
+        # broadcasts a "leave" delta when `_clear_groups` drops a member —
+        # kept as a plug point rather than importing `.groups` here, same
+        # reasoning as `_deliver_exit`'s local import of `.links`.
+        self._groups = {}
+        self._group_leave_hook = None
 
     @staticmethod
     def _build_id(node_name, listen_port):
@@ -201,12 +221,28 @@ class Node:
         self._event_listeners.append(callback)
 
     def _on_core_event(self, event):
-        if event.get("kind") == "peer_connected":
+        kind = event.get("kind")
+        if kind == "peer_connected":
             waiters = self._peer_waiters.get(event.get("peer"))
             if waiters:
                 for fut in waiters:
                     if not fut.done():
                         fut.set_result(None)
+        elif kind == "peer_disconnected":
+            # A linked actor's node dropped off the network — deliver a
+            # "noconnection" exit to anything that had linked to one of
+            # its actors, then forget those links (no auto-relink on
+            # reconnect). `_on_core_event` itself must stay synchronous
+            # (Rust calls it via call_soon_threadsafe), so the actual
+            # delivery — which needs to await — runs as its own task.
+            peer = event.get("peer")
+            for name, targets in list(self._links.items()):
+                gone = [t for t in targets if t[0] == peer]
+                for target in gone:
+                    targets.discard(target)
+                    asyncio.create_task(
+                        self._deliver_exit(f"{target[0]}/{target[1]}", name, "noconnection")
+                    )
         for callback in list(self._event_listeners):
             try:
                 callback(event)
@@ -361,6 +397,73 @@ class Node:
             raise RuntimeError("node has not been started")
         payload = codec.encode_payload(msg)
         self._core.send_data(peer_id, actor_name, payload, reply_to, correlation_id)
+
+    async def _deliver_exit(self, from_label, target_name, reason):
+        """Delivers a `lapinbeam.links` exit signal to `target_name`: an
+        ordinary `Exit` message if it called `trap_exit()`, otherwise a
+        kill routed through its own Supervisor's normal crash/restart
+        path (see `Supervisor._run_actor_child`'s `pending_exit` check)."""
+        from .links import Exit
+
+        if self._trap_exit.get(target_name):
+            if target_name in self._mailboxes:
+                await self._send_local(target_name, Exit(actor=from_label, reason=reason))
+            return
+        child = self._live_children.get(target_name)
+        if child is not None and child.driver is not None and not child.driver.done():
+            child.pending_exit = RuntimeError(f"linked actor {from_label!r} exited: {reason}")
+            child.driver.cancel()
+
+    def _clear_links(self, name):
+        """Called by `Supervisor._run_actor_child` every time an actor's
+        current generation ends, whether it's about to restart in place or
+        gone for good — links don't survive a restart, so the next
+        generation (if any) starts with a clean slate either way. Returns
+        the targets it was linked to, so the caller can notify them if
+        (and only if) this generation isn't coming back."""
+        self._trap_exit.pop(name, None)
+        return self._links.pop(name, None)
+
+    def _clear_groups(self, name):
+        """Called by `Supervisor._run_actor_child` every time an actor's
+        current generation ends, restarting or not — unlike links, a group
+        "leave" is broadcast unconditionally (not only on final death):
+        membership is pid-scoped, so even a within-budget restart means
+        this generation is no longer a member, full stop. A fresh
+        generation that wants to stay a member re-`join_group()`s itself,
+        typically from `__init__`."""
+        target = (self.local_id, name)
+        left = [group for group, members in self._groups.items() if target in members]
+        for group in left:
+            self._groups[group].discard(target)
+            if self._group_leave_hook is not None:
+                self._group_leave_hook(group, name)
+        return left
+
+    def _notify_links(self, actor_name, targets, reason):
+        """Tells every target `actor_name` was linked to (captured via
+        `_clear_links`) that it has exited for good."""
+        if not targets:
+            return
+        for peer_id, target_name in targets:
+            if peer_id is None:
+                asyncio.create_task(self._deliver_exit(actor_name, target_name, reason))
+            else:
+                asyncio.create_task(
+                    self._notify_remote_exit(peer_id, target_name, actor_name, reason)
+                )
+
+    async def _notify_remote_exit(self, peer_id, target_name, actor_name, reason):
+        from .links import LINK_ACTOR
+
+        remote = self.get_remote_actor(peer_id, LINK_ACTOR)
+        try:
+            await remote.send({
+                "op": "exit", "to": target_name, "actor": actor_name,
+                "reason": reason, "from_node": self.local_id,
+            })
+        except Exception:
+            pass  # best-effort, same as any other fire-and-forget notification
 
     def __repr__(self):
         return f"<Node {self.local_id!r}>"
