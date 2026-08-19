@@ -31,9 +31,22 @@ of `1.0.0`, a breaking change requires a major version bump.
   constructor, like `spawn()`) and dispatches each message through that
   instance's own `@on` handlers (or `receive`), giving workers real
   per-instance state across messages instead of the stateless-function
-  form. See
+  form. Three more `spawn_pool()` options: `queue_capacity` bounds the
+  internal queue (same convention as `Node(mailbox_capacity=...)`) —
+  once full, a further `send()` is dropped and reported via
+  `on_event(kind="pool_queue_full")`, same shape as `mailbox_full`;
+  `key(msg)` shards the pool — each worker gets its own queue and every
+  message with the same key always lands on the same worker in arrival
+  order, trading load-balance for per-key ordering; `executor="thread"`/
+  `"process"` runs a plain **synchronous** `handler` off the event loop
+  in a real `ThreadPoolExecutor`/`ProcessPoolExecutor` sized to
+  `n_workers`, for genuinely CPU-bound work (auto-replies with the
+  handler's return value for `ask()`/`ask_stream()` callers) —
+  `executor="process"` doesn't support an `@actor` class handler and
+  requires a picklable, module-level `handler`. See
   [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
-  for when a pool — and which handler shape — is the right tool.
+  for when a pool — and which handler shape and option — is the right
+  tool.
 - **`ActorRef.ask_stream()` / `RemoteRef.ask_stream()`**, plus
   `MessageMeta.reply_stream()`/`reply_final()`: a streaming counterpart to
   `ask()`, for a handler that needs to report *progress*, not just a

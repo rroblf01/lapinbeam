@@ -190,16 +190,49 @@ que un solo actor podría procesar, pero cada uno es lo bastante barato (o
 I/O-bound — ver el aviso de abajo) como para que unos pocos workers den
 abasto, y no te importa *cuál* de ellos procese cada elemento — usa la
 forma función para trabajo sin estado, y la forma clase cuando los workers
-deban mantener estado entre mensajes. **Cuándo no**: si importa que "el
-mismo tipo de mensaje siempre caiga en el mismo worker" (p.ej. orden por
-clave) — para eso, vuelve a N `sup.spawn()` sueltos y reparte tú mismo con
-`hash(clave) % n_workers`. Y si necesitas esperar *varias* respuestas
-independientes a la vez en vez de que un pool responda a un único
-`ask()`, la herramienta es `asyncio.gather()` sobre varios `ask()` (con
-pool o sin él) — ver el patrón de mixture-of-experts en
-[Agentes de IA y MCP](ai-agents.es.md).
+deban mantener estado entre mensajes. **Cuándo no**: si necesitas esperar
+*varias* respuestas independientes a la vez en vez de que un pool
+responda a un único `ask()`, la herramienta es `asyncio.gather()` sobre
+varios `ask()` (con pool o sin él) — ver el patrón de mixture-of-experts
+en [Agentes de IA y MCP](ai-agents.es.md).
 
-!!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound"
+### Backpressure: acotar la cola del pool
+
+Por defecto la cola interna del pool no tiene límite — si `pool.send()` se
+llama más rápido de lo que los workers pueden vaciarla, la cola sigue
+creciendo. Pasa `queue_capacity` para acotarla, misma convención que
+`Node(mailbox_capacity=...)`: una vez llena, un `send()` de más se
+descarta y se reporta vía `on_event(kind="pool_queue_full")` en vez de
+consumir memoria sin límite:
+
+```python
+pool = await sup.spawn_pool(process, 5, name="processors", queue_capacity=1000)
+```
+
+### Orden por clave: pools particionados
+
+El reparto por defecto es "el worker que esté libre" — bueno para
+throughput, pero no da ninguna garantía de orden entre dos mensajes de la
+misma entidad lógica (p.ej. dos actualizaciones del mismo `order_id`
+podrían acabar procesadas fuera de orden por dos workers distintos). Pasa
+`key` para particionar el pool: cada worker tiene su *propia* cola, y todo
+mensaje con la misma clave siempre cae en el mismo worker, en el orden de
+llegada, mientras que claves distintas siguen corriendo en paralelo:
+
+```python
+pool: PoolRef = await sup.spawn_pool(
+    process, 5, name="processors", key=lambda msg: msg["order_id"]
+)
+```
+
+Ahora todo mensaje de `order_id=42` lo procesa un worker concreto, en
+orden, mientras `order_id=43` corre a la vez en otro distinto. El
+compromiso: una distribución de claves desigual (unas pocas claves muy
+"calientes") puede dejar workers ociosos mientras otros acumulan cola —
+esta no es la herramienta para repartir throughput de forma uniforme, solo
+para los casos en los que el orden importa más que la carga equilibrada.
+
+!!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound — salvo que pidas un executor"
     Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
     o cualquier otro `await` que ceda el control de verdad) permite a
     asyncio intercalar la espera de cada actor en el mismo hilo. **No**
@@ -207,11 +240,49 @@ pool o sin él) — ver el patrón de mixture-of-experts en
     ningún `await` dentro — el bucle de eventos de asyncio es de un solo
     hilo, así que N actores machacando números siguen corriendo uno detrás
     de otro, igual de lento que N llamadas secuenciales dentro de un solo
-    actor. Para trabajo genuinamente CPU-bound, recurre a
-    `loop.run_in_executor()` (un pool de hilos o de procesos) dentro del
-    handler, o reparte el trabajo entre procesos de sistema operativo
-    separados — p.ej. varios `Node` de lapinbeam, posiblemente en máquinas
-    distintas, hablando por red igual que el ejemplo de dos nodos de abajo.
+    actor.
+
+    Para trabajo genuinamente CPU-bound, pasa `executor="process"` (o
+    `"thread"`, para una llamada bloqueante que no es CPU-bound pero no
+    tiene equivalente async, p.ej. una librería C o un driver de BBDD
+    síncronos) — `handler` debe ser entonces una función **síncrona**
+    normal, ejecutada fuera del event loop en un
+    `ProcessPoolExecutor`/`ThreadPoolExecutor` real, dimensionado a
+    `n_workers`. Su valor de retorno se envía de vuelta automáticamente si
+    el mensaje llegó por `ask()`/`ask_stream()`:
+
+    ```python
+    def crunch(msg):          # def normal, no async def
+        return sum(i * i for i in range(msg["n"]))
+
+
+    async def main():
+        async with Node("app@127.0.0.1:0") as node:
+            sup = Supervisor(node=node)
+            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
+            result = await pool.ask({"n": 10_000_000})
+
+
+    if __name__ == "__main__":     # necesario con executor="process" — ver abajo
+        asyncio.run(main())
+    ```
+
+    `executor="process"` no admite una clase `@actor` como `handler` — no
+    hay forma de mantener estado de Python en `self` a través de una
+    frontera de proceso — y exige que `handler` y cada mensaje/`args`/
+    `kwargs` con el que se llame sean serializables con pickle (una
+    función a nivel de módulo, no un closure ni una lambda). También
+    hereda el requisito habitual de `multiprocessing`: el script de
+    entrada debe proteger su código de nivel de módulo con
+    `if __name__ == "__main__":` — sin eso, un proceso worker reimporta el
+    script como `__main__` y vuelve a ejecutar todo lo de nivel de módulo
+    (incluido el propio `asyncio.run(main())`), lo que en el mejor caso
+    duplica trabajo y en el peor se queda colgado. `executor="thread"` no
+    tiene esta restricción — comparte el proceso padre en vez de lanzar
+    procesos nuevos. Una alternativa que evita ambas restricciones:
+    reparte el trabajo entre procesos de sistema operativo separados —
+    p.ej. varios `Node` de lapinbeam, posiblemente en máquinas distintas,
+    hablando por red igual que el ejemplo de dos nodos de abajo.
 
 ## Dos nodos hablando entre sí
 

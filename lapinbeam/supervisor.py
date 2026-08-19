@@ -3,6 +3,8 @@ unhandled exceptions, according to a restart strategy.
 """
 
 import asyncio
+import concurrent.futures
+import functools
 import inspect
 import time
 
@@ -119,16 +121,18 @@ class Supervisor:
         node._register_task(child.task)
         return ActorRef(node, name, child=child)
 
-    async def spawn_pool(self, handler, n_workers, *args, name, **kwargs):
+    async def spawn_pool(self, handler, n_workers, *args, name,
+                          queue_capacity=None, executor=None, key=None, **kwargs):
         """Spawns a *fixed* pool of `n_workers` actors sharing one queue —
         the pattern `examples/order_stream/` used to build by hand before
         this existed: a reserved "dispatcher" actor (named `name`, the one
         a remote node addresses via `get_remote_actor(peer, name)`) that
         just drops incoming messages on a shared `asyncio.Queue`, and
         `n_workers` persistent actors pulling from it — whichever is free
-        next picks up the next message, not round-robin. Returns a
-        `PoolRef`. Async, unlike `spawn()`: each worker needs one real
-        message to start its loop, and that has to be awaited.
+        next picks up the next message, not round-robin (unless `key` is
+        given — see below). Returns a `PoolRef`. Async, unlike `spawn()`:
+        each worker needs one real message to start its loop, and that has
+        to be awaited.
 
         `handler` is either a plain async function or an `@actor`-decorated
         class:
@@ -146,7 +150,8 @@ class Supervisor:
           worker can keep real per-instance state (a cache, a counter, a
           connection) across the messages it happens to pick up. Which
           worker gets which message is still not deterministic — don't
-          rely on message *order* landing on any particular instance.
+          rely on message *order* landing on any particular instance
+          unless you also pass `key` (below).
 
         Either way, inside the handler, `current_message()`/
         `current_message().reply()` and `ask()`/`ask_stream()` sent to the
@@ -168,6 +173,43 @@ class Supervisor:
         (unlike a `spawn()`ed actor's crash, which gets a fresh instance
         on restart).
 
+        `queue_capacity` bounds the shared queue (or, with `key`, *each*
+        per-worker queue) — `None` (default) means unbounded, same
+        convention as `Node(mailbox_capacity=...)`. Once the queue is
+        full, a further `pool.send()` is dropped and reported via
+        `on_event(kind="pool_queue_full")` instead of blocking the sender
+        or growing memory without limit — same "bounded, drop, and tell
+        someone" shape as `mailbox_full`, not a new backpressure mechanism.
+
+        `executor="thread"` or `executor="process"` routes each message to
+        a `concurrent.futures.ThreadPoolExecutor`/`ProcessPoolExecutor`
+        (sized to `n_workers`) instead of running `handler` on the event
+        loop — for genuinely CPU-bound work, where `asyncio.sleep`-style
+        concurrency doesn't help (see the warning in
+        [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)).
+        Only a plain **synchronous** function `handler` is supported here
+        (no `@actor` class — there's no way to keep Python state on `self`
+        across a process boundary, and threads share the GIL so there's no
+        parallelism gain in keeping state there either); `handler`'s
+        return value is sent back automatically via `current_message().reply()`
+        equivalent if the message was sent through `ask()`/`ask_stream()`.
+        `executor="process"` additionally requires `handler` (and every
+        message/`args`/`kwargs` it's called with) to be picklable — a
+        module-level function, not a closure or lambda; a failure to
+        pickle surfaces as an ordinary `on_event(kind="pool_worker_error")`
+        for that message, same as any other handler exception.
+
+        `key(msg)` turns this from a load-balanced pool into a *sharded*
+        one: instead of one shared queue, each worker gets its own, and
+        the dispatcher routes `msg` to worker `hash(key(msg)) % n_workers`
+        — so every message with the same key is always handled by the
+        same worker, in the order it arrived, while different keys still
+        run in parallel across workers. Use this when per-key ordering
+        matters (e.g. all updates for the same `order_id` must apply in
+        order) — the tradeoff is that an unlucky key distribution can
+        leave some workers idle while others queue up, unlike the default
+        whichever-is-free routing.
+
         Use this instead of `n_workers` separate `spawn()` calls when work
         items arrive faster than one actor could get through them, but the
         actual per-item work is cheap enough (or I/O-bound enough) that a
@@ -178,8 +220,36 @@ class Supervisor:
         never collide by accident — actor names must be unique per node.
         """
         node = self.node
-        queue = asyncio.Queue()
         is_actor_cls = inspect.isclass(handler) and hasattr(handler, "__lapinbeam_actor__")
+        maxsize = queue_capacity or 0
+
+        exec_pool = None
+        if executor is not None:
+            if executor not in ("thread", "process"):
+                raise ValueError(f"executor must be 'thread', 'process', or None, not {executor!r}")
+            if is_actor_cls:
+                raise TypeError(
+                    "spawn_pool(executor=...) doesn't support an @actor class handler "
+                    "— per-instance state can't cross a thread/process boundary; use a "
+                    "plain function"
+                )
+            if inspect.iscoroutinefunction(handler):
+                raise TypeError(
+                    "spawn_pool(executor=...) requires a synchronous handler (def, not "
+                    "async def) — it runs off the event loop, in a real thread/process"
+                )
+            executor_cls = (
+                concurrent.futures.ThreadPoolExecutor
+                if executor == "thread"
+                else concurrent.futures.ProcessPoolExecutor
+            )
+            exec_pool = executor_cls(max_workers=n_workers)
+
+        sharded = key is not None
+        if sharded:
+            queues = [asyncio.Queue(maxsize=maxsize) for _ in range(n_workers)]
+        else:
+            queue = asyncio.Queue(maxsize=maxsize)
 
         @actor(name=name)
         class _Dispatcher:
@@ -190,7 +260,27 @@ class Supervisor:
                 # dispatch. Carried alongside `msg` so a worker can restore
                 # it later, potentially long after the dispatcher has
                 # moved on to other messages.
-                queue.put_nowait((msg, current_message_var.get()))
+                meta = current_message_var.get()
+                if sharded:
+                    try:
+                        target = queues[hash(key(msg)) % n_workers]
+                    except Exception as exc:
+                        node._on_core_event({
+                            "kind": "pool_worker_error",
+                            "pool": name,
+                            "detail": f"key() raised {type(exc).__name__}: {exc}",
+                        })
+                        return
+                else:
+                    target = queue
+                try:
+                    target.put_nowait((msg, meta))
+                except asyncio.QueueFull:
+                    node._on_core_event({
+                        "kind": "pool_queue_full",
+                        "pool": name,
+                        "detail": f"pool {name!r}'s queue is full (capacity={maxsize})",
+                    })
 
         async def _dispatch_to_instance(instance, item):
             actor_meta = type(instance).__lapinbeam_actor__
@@ -208,28 +298,40 @@ class Supervisor:
             await getattr(instance, handler_name)(item)
 
         def _build_worker(index):
+            worker_queue = queues[index] if sharded else queue
+
             @actor(name=f"__{name}_worker_{index}__")
             class _Worker:
                 def __init__(self):
                     self._instance = handler(*args, **kwargs) if is_actor_cls else None
 
                 async def receive(self, _msg):
-                    while True:
-                        item, meta = await queue.get()
-                        token = current_message_var.set(meta)
-                        try:
-                            if is_actor_cls:
-                                await _dispatch_to_instance(self._instance, item)
-                            else:
-                                await handler(item, *args, **kwargs)
-                        except Exception as exc:
-                            node._on_core_event({
-                                "kind": "pool_worker_error",
-                                "pool": name,
-                                "detail": f"{type(exc).__name__}: {exc}",
-                            })
-                        finally:
-                            current_message_var.reset(token)
+                    try:
+                        while True:
+                            item, meta = await worker_queue.get()
+                            token = current_message_var.set(meta)
+                            try:
+                                if exec_pool is not None:
+                                    loop = asyncio.get_running_loop()
+                                    call = functools.partial(handler, item, *args, **kwargs)
+                                    result = await loop.run_in_executor(exec_pool, call)
+                                    if meta is not None and meta.reply_to is not None:
+                                        await meta.reply(result)
+                                elif is_actor_cls:
+                                    await _dispatch_to_instance(self._instance, item)
+                                else:
+                                    await handler(item, *args, **kwargs)
+                            except Exception as exc:
+                                node._on_core_event({
+                                    "kind": "pool_worker_error",
+                                    "pool": name,
+                                    "detail": f"{type(exc).__name__}: {exc}",
+                                })
+                            finally:
+                                current_message_var.reset(token)
+                    finally:
+                        if exec_pool is not None:
+                            exec_pool.shutdown(wait=False, cancel_futures=True)
 
             return _Worker
 

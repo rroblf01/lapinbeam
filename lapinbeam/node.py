@@ -233,10 +233,17 @@ class Node:
           rejected) — see `lapinbeam.registry`'s module docstring for why
           this can happen and what it doesn't guarantee.
         - `"pool_worker_error"` — a `Supervisor.spawn_pool()` worker's
-          `handler` raised while processing a queued message.
-          `event["pool"]` is the pool's name, `event["detail"]` describes
-          the exception. The worker itself doesn't crash — it moves on to
-          the next queued message — so this is purely observational.
+          `handler` raised while processing a queued message, or (for a
+          sharded pool) its `key()` routing function raised while
+          choosing a worker. `event["pool"]` is the pool's name,
+          `event["detail"]` describes the exception. The worker itself
+          doesn't crash — it moves on to the next queued message — so
+          this is purely observational.
+        - `"pool_queue_full"` — a message for `Supervisor.spawn_pool()`'s
+          `event["pool"]` was dropped because its internal queue was full
+          (only possible with `queue_capacity` set — unbounded by
+          default), same shape as `"mailbox_full"` but for a pool's shared
+          (or, with `key`, per-worker) queue rather than an actor mailbox.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.

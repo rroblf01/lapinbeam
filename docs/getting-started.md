@@ -185,24 +185,93 @@ actor could get through them, but each item is cheap enough (or I/O-bound
 enough — see the warning below) that a handful of workers keep up, and
 you don't care *which* worker handles a given item — pick the function
 form for stateless work, the class form when workers should keep state
-across messages. **When not to**: if "the same kind of message must
-always land on the same worker" matters (e.g. per-key ordering) — for
-that, go back to `n_workers` plain `sup.spawn()` calls and route by
-`hash(key) % n_workers` yourself. And if you need to wait for *several*
+across messages. **When not to**: if you need to wait for *several*
 independent replies at once rather than one pool answering one `ask()`,
 `asyncio.gather()` over several `ask()` calls (pool or not) is the tool —
 see the mixture-of-experts pattern in [AI agents & MCP](ai-agents.md).
 
-!!! warning "This parallelism is for I/O-bound work, not CPU-bound work"
+### Backpressure: bounding the pool's queue
+
+By default the pool's internal queue is unbounded — if `pool.send()` is
+called faster than the workers can drain it, the queue just keeps
+growing. Pass `queue_capacity` to cap it, same convention as
+`Node(mailbox_capacity=...)`: once it's full, a further `send()` is
+dropped and reported via `on_event(kind="pool_queue_full")` instead of
+consuming unbounded memory:
+
+```python
+pool = await sup.spawn_pool(process, 5, name="processors", queue_capacity=1000)
+```
+
+### Per-key ordering: sharded pools
+
+The default routing is "whichever worker is free next" — good for
+throughput, but it gives no ordering guarantee between two messages for
+the same logical entity (e.g. two updates for the same `order_id` could
+be picked up out of order by two different workers). Pass `key` to shard
+the pool instead: each worker gets its *own* queue, and every message
+with the same key always lands on the same worker, in arrival order,
+while different keys still run in parallel:
+
+```python
+pool: PoolRef = await sup.spawn_pool(
+    process, 5, name="processors", key=lambda msg: msg["order_id"]
+)
+```
+
+Now every message for `order_id=42` is handled by one specific worker, in
+order, while `order_id=43` runs concurrently on a different one. The
+tradeoff: an uneven key distribution (a handful of very "hot" keys) can
+leave some workers idle while others queue up — this isn't the tool for
+balancing raw throughput, only for the cases where ordering matters more
+than perfectly even load.
+
+!!! warning "This parallelism is for I/O-bound work, not CPU-bound work — unless you ask for an executor"
     A pool helps because `await asyncio.sleep(...)` (or a network call, or
     any other `await` that actually yields control) lets asyncio interleave
     every actor's wait on the same thread. It does **not** help a handler
     that's doing real, synchronous CPU work with no `await` in it at all —
     Python's asyncio event loop is single-threaded, so N actors all
     crunching numbers still run one after another, exactly as slow as N
-    sequential calls inside one actor. For genuinely CPU-bound work, reach
-    for `loop.run_in_executor()` (a thread or process pool) inside the
-    handler, or split the work across separate OS processes — e.g. several
+    sequential calls inside one actor.
+
+    For genuinely CPU-bound work, pass `executor="process"` (or
+    `"thread"`, for a blocking call that isn't CPU-bound but has no async
+    equivalent, e.g. a synchronous C library or DB driver) — `handler`
+    must then be a plain **synchronous** function, run off the event loop
+    in a real `ProcessPoolExecutor`/`ThreadPoolExecutor` sized to
+    `n_workers`. Its return value is sent back automatically if the
+    message came in through `ask()`/`ask_stream()`:
+
+    ```python
+    def crunch(msg):          # plain def, not async def
+        return sum(i * i for i in range(msg["n"]))
+
+
+    async def main():
+        async with Node("app@127.0.0.1:0") as node:
+            sup = Supervisor(node=node)
+            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
+            result = await pool.ask({"n": 10_000_000})
+
+
+    if __name__ == "__main__":     # required for executor="process" — see below
+        asyncio.run(main())
+    ```
+
+    `executor="process"` doesn't support an `@actor` class `handler` —
+    there's no way to keep Python state on `self` across a process
+    boundary — and requires `handler` plus every message/`args`/`kwargs`
+    it's called with to be picklable (a module-level function, not a
+    closure or lambda). It also inherits the standard `multiprocessing`
+    requirement that the entry script guard its top-level code with
+    `if __name__ == "__main__":` — without it, a worker process re-imports
+    the script as `__main__` and re-runs everything at module scope
+    (including `asyncio.run(main())` itself), which at best duplicates
+    work and at worst hangs. `executor="thread"` has no such restriction —
+    it shares the parent process instead of spawning new ones. An
+    alternative that sidesteps both constraints:
+    split the work across separate OS processes yourself — several
     lapinbeam `Node`s, possibly on different machines, talking over the
     network the same way the two-node example below does.
 
