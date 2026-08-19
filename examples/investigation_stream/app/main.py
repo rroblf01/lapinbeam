@@ -1,14 +1,14 @@
-"""FastAPI + lapinbeam + Postgres: one lapinbeam actor per investigation
-(see investigation.py), each one calling a simulated AI provider through a
-process-wide semaphore (`MAX_PARALLEL`, default 200) and persisting its
-progress to Postgres as it goes. `/investigations/{id}/stream` (SSE)
-replays whatever's already in Postgres first, then live-streams new steps
-— reload the page mid-investigation and it picks up exactly where it is.
+"""FastAPI HTTP layer only — the actual investigation work happens on a
+separate `worker` node (see worker/investigation.py), reached over the
+network like any other lapinbeam peer. This container never runs an
+investigation's steps itself; it only creates the Postgres row, dispatches
+a message to `worker`'s `dispatcher` actor, and relays whatever `worker`
+pushes back (via the local `ticks` actor, see ticks.py) into the SSE
+stream the browser is watching.
 """
 
 import asyncio
 import json
-import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -19,26 +19,31 @@ from lapinbeam import Node, Supervisor
 
 import db
 import pubsub
-from investigation import run_investigation
+from ticks import Ticks
 
-NODE_NAME = os.environ.get("NODE_NAME", "investigation_stream@127.0.0.1:9000")
+NODE_NAME = os.environ.get("NODE_NAME", "app@127.0.0.1:9000")
+WORKER_NODE = os.environ.get("WORKER_NODE", "worker@worker:9001")
 
 node = None
-sup = None
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global node, sup
+    global node
     await db.connect()
-    node = Node(NODE_NAME)
+    node = Node(NODE_NAME, connect_timeout=30.0)
     await node.start()
-    # max_restarts=0: an investigation that raises reports "error" to
-    # Postgres and retires for good (see investigation.py) — no point
-    # retrying a fresh instance against a "go" message that's already
-    # gone, and one_for_one means it never affects any other investigation
-    # sharing this Supervisor either way.
-    sup = Supervisor(node=node, max_restarts=0)
+    Supervisor(node=node).spawn(Ticks)
+
+    for _ in range(30):
+        try:
+            await node.connect_peer(WORKER_NODE)
+            break
+        except ConnectionError:
+            await asyncio.sleep(1.0)
+    else:
+        raise RuntimeError(f"no se pudo conectar con worker en {WORKER_NODE!r}")
+
     yield
     await node.stop()
     await db.disconnect()
@@ -52,25 +57,12 @@ async def index():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
-async def _run_and_log(investigation_id):
-    try:
-        await run_investigation(sup, investigation_id)
-    except Exception:
-        # investigation.py already persists "error" to Postgres before
-        # this could ever fire — this is only a backstop against
-        # something failing outside that (e.g. the DB write itself).
-        logging.exception("investigation %s crashed outside its own handling", investigation_id)
-
-
 @app.post("/investigations")
 async def create_investigation():
     investigation_id = str(uuid.uuid4())
     await db.create_investigation(investigation_id)
-    # Fire-and-forget from the HTTP response's point of view — the actual
-    # work (and its own concurrency limit) happens independently of this
-    # request/response cycle, exactly like the two-node docs example
-    # doesn't wait for a reply before returning.
-    asyncio.create_task(_run_and_log(investigation_id))
+    dispatcher = node.get_remote_actor(WORKER_NODE, "dispatcher")
+    await dispatcher.send({"investigation_id": investigation_id, "reply_node": node.local_id})
     return {"id": investigation_id}
 
 
@@ -89,11 +81,9 @@ async def stream_investigation(investigation_id: str):
         raise HTTPException(status_code=404, detail="investigation not found")
 
     async def events():
-        # Subscribe *before* the catch-up read: otherwise a step that
-        # completes in the gap between "read current state" and
-        # "register as a subscriber" would notify no one, and — since a
-        # very short investigation could have nothing else left to
-        # publish — that update might never reach this client at all.
+        # Subscribe *before* the catch-up read — a step that completes in
+        # the gap between "read current state" and "register as a
+        # subscriber" would otherwise notify no one.
         queue = pubsub.subscribe(investigation_id)
         try:
             current = await db.get_investigation(investigation_id)
@@ -101,10 +91,13 @@ async def stream_investigation(investigation_id: str):
             if current["status"] != "en_progreso":
                 return
             while True:
-                await queue.get()
-                current = await db.get_investigation(investigation_id)
-                yield _sse(current)
-                if current["status"] in ("completado", "error"):
+                # `worker` pushes the full current state directly in
+                # every tick (see worker/investigation.py's `_notify`) —
+                # no re-read of Postgres needed here at all, unlike a
+                # design that only got a "something changed" signal.
+                event = await queue.get()
+                yield _sse(event)
+                if event["status"] in ("completado", "error"):
                     return
         finally:
             pubsub.unsubscribe(investigation_id, queue)

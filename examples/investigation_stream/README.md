@@ -1,70 +1,75 @@
 # Ejemplo: investigaciones paralelas con FastAPI + SSE + Postgres
 
-Un servidor FastAPI en el que cada `POST /investigations` arranca una
-investigación con 4 pasos secuenciales que simulan llamadas a un
-proveedor de IA (`await asyncio.sleep(random.uniform(1, 3))`), va
-guardando el progreso en Postgres, y lo retransmite en tiempo real por
-Server-Sent Events — cierra la pestaña, vuelve a abrir
-`/investigations/{id}/stream` y retoma exactamente por donde iba, porque
-el estado vive en Postgres, no en memoria.
-
-La pieza de lapinbeam es deliberadamente pequeña: **un actor por
-investigación**, no un actor compartido por etapa. Es la misma lección de
-[Concurrencia en Primeros pasos](../../docs/getting-started.md#concurrency-one-actor-handles-one-message-at-a-time) —
-si las 4 etapas fueran actores fijos compartidos por todas las
-investigaciones, se serializarían entre sí sin importar cuántas quisieras
-lanzar en paralelo.
+Tres contenedores — `postgres`, `app` y `worker` — donde cada
+`POST /investigations` en `app` arranca, en `worker`, una investigación
+con 4 pasos secuenciales que simulan llamadas a un proveedor de IA
+(`await asyncio.sleep(random.uniform(1, 3))`). El progreso se guarda en
+Postgres y se retransmite en tiempo real por Server-Sent Events — cierra
+la pestaña, vuelve a abrir `/investigations/{id}/stream` y retoma
+exactamente por donde iba, porque el estado vive en Postgres, no en
+memoria de ningún proceso.
 
 ## Cómo está montado
 
+`app` (la capa HTTP) y `worker` (el pool de actores lapinbeam que hace el
+trabajo real) son **procesos y contenedores separados**, hablando por red
+como dos nodos lapinbeam cualquiera — no una capa HTTP y un "hilo de
+fondo" compartiendo memoria en el mismo proceso. Esto importa de verdad:
+`worker` se puede reiniciar sin tirar abajo la API, escalar por separado
+si algún día hiciera falta, y un pico de tráfico HTTP en `app` no le quita
+CPU al trabajo que `worker` tiene entre manos.
+
 ```
-POST /investigations                    GET /investigations/{id}/stream
-        │                                          │
-        ▼                                          ▼
-  crea fila en Postgres              lee Postgres (catch-up) + se
-  (status=en_progreso)               suscribe a las actualizaciones
-        │                            en vivo (pubsub.py, en memoria)
-        ▼                                          ▲
-  sup.spawn(Investigation_id)                       │
-        │                                           │
-        ▼                                           │
-  ┌─────────────────────────────┐                   │
-  │ un actor lapinbeam por       │                   │
-  │ investigación:               │                   │
-  │  for step in STEPS:          │                   │
-  │    async with AI_SEMAPHORE:  │───────────────────┘
-  │      await sleep(1-3s)  # IA │  tras cada paso: UPDATE Postgres
-  │    guarda paso en Postgres   │  + pubsub.publish()
-  │  ask() responde -> se retira │
-  │  (ref.task.cancel())         │
-  └─────────────────────────────┘
+┌─────────────── app (FastAPI) ───────────────┐   ┌────────── worker ──────────┐
+│                                              │   │                            │
+│  POST /investigations                       │   │  sup.spawn(Dispatcher)     │
+│    crea fila en Postgres (en_progreso)       │   │  sup.spawn(Worker_0..N)    │
+│    dispatcher.send({id, reply_node=app_id}) ─┼──▶│    cada uno: while True:   │
+│                                              │   │      id = await queue.get()│
+│  GET /investigations/{id}/stream             │   │      for step in STEPS:    │
+│    lee Postgres (catch-up)                   │   │        sleep(1-3s)  # IA   │
+│    se suscribe a pubsub.py (memoria)         │   │        guarda en Postgres  │
+│    reenvía cada evento tal cual llega ───────┤◀──┼────────ticks.send({...})   │
+│                                              │   │        (push, no polling)  │
+│  ticks (actor local): recibe el push         │   │                            │
+│    y hace pubsub.publish()                   │   │                            │
+└──────────────────────────────────────────────┘   └────────────────────────────┘
+                    │                                            │
+                    └──────────────── Postgres ──────────────────┘
+                          (única fuente de verdad durable)
 ```
 
-- **`AI_SEMAPHORE`** (tamaño = `MAX_PARALLEL`, por defecto 200) limita
-  cuántas llamadas a la IA están en vuelo *a la vez* — no cuántas
-  investigaciones pueden existir. Es exactamente el límite que impondría
-  el rate-limit real de un proveedor de IA.
-- **Postgres** es la única fuente de verdad del estado. El pubsub en
-  memoria (`pubsub.py`) solo existe para no tener que hacer polling desde
-  cada conexión SSE abierta — un reinicio del proceso no pierde nada,
-  porque cualquier cliente que reconecte vuelve a leer de Postgres.
-- Cada investigación termina con `ref.task.cancel()` tras su propio
-  `ask()` — sin esto, un actor cuyo trabajo ya terminó se queda vivo para
-  siempre esperando en un mailbox vacío. Con investigaciones "infinitas"
-  en producción, eso sí importa.
+- **`dispatcher`** es el único actor de `worker` que `app` necesita
+  conocer por nombre — el mismo truco de actor reservado y bien conocido
+  que usan `lapinbeam.discovery`/`links`/`groups`/`registry` para sus
+  propios actores de control. Solo mete el id en la cola compartida; el
+  pool de `MAX_PARALLEL` workers (creado una vez al arrancar, no uno por
+  investigación — ver la sección de abajo) es quien de verdad hace el
+  trabajo.
+- El progreso se **empuja** de vuelta a `app`, no se sondea: `worker`
+  reutiliza la misma conexión que `app` abrió para alcanzar `dispatcher`
+  (las conexiones lapinbeam sirven en ambos sentidos una vez
+  establecidas) para enviar cada actualización directamente al actor
+  `ticks` de `app`, que solo hace `pubsub.publish()`. El SSE nunca vuelve
+  a leer Postgres tras el arranque de la conexión — cada tick ya trae el
+  estado completo.
+- **Postgres sigue siendo la única fuente de verdad durable.** Si un
+  push se pierde (`app` reiniciando justo en ese instante, por ejemplo),
+  es una actualización en vivo perdida, nunca un dato perdido — quien
+  reconecte después ve el estado real leyendo Postgres directamente.
 
-> **Nota:** este ejemplo solo usa `Node`/`Supervisor`/`actor`/
-> `current_message`, ya disponibles desde `lapinbeam>=1.0.2` en PyPI — a
-> diferencia de `examples/cluster_supervision/`, no necesita ninguna
-> versión sin publicar.
+> **Nota:** este ejemplo solo usa `Node`/`Supervisor`/`actor`, ya
+> disponibles desde `lapinbeam>=1.0.2` en PyPI — a diferencia de
+> `examples/cluster_supervision/`, no necesita ninguna versión sin
+> publicar.
 
 ## Ejecutarlo
 
 ```bash
 cd examples/investigation_stream
-docker compose up --build          # MAX_PARALLEL=200 por defecto
-# o:
-MAX_PARALLEL=0 docker compose up --build   # 0 = sin límite
+docker compose up --build              # MAX_PARALLEL=200 por defecto (tamaño del pool en `worker`)
+# o, por ejemplo:
+MAX_PARALLEL=1000 docker compose up --build
 ```
 
 Abre <http://localhost:8000>, pulsa "Nueva investigación", y observa los
@@ -80,120 +85,82 @@ uv run python load_test.py -n 1000   # dispara N investigaciones, sigue
                                       # el SSE de cada una hasta el final
 ```
 
-## Resultados medidos
+## De un actor por investigación a un pool fijo: qué cambió y qué se midió
 
-Cinco corridas reales contra los contenedores (`docker stats` muestreado
-cada 3s durante cada corrida; Postgres arrancado limpio antes de cada
-una). Cada investigación individual, sin contención, tarda entre ~6 y
-~12s (4 pasos × `uniform(1,3)`s cada uno).
+La primera versión de este ejemplo creaba **un actor lapinbeam nuevo por
+cada investigación** (una clase Python nueva, registrada en el core de
+Rust, con su propio mailbox), limitando solo la llamada a la IA con un
+semáforo — y retirándolo (`ask()` + `ref.task.cancel()`) al terminar. Con
+1000 investigaciones eso son 1000 clases creadas y 1000 retiradas, aunque
+solo `MAX_PARALLEL` pudieran hacer trabajo útil a la vez. Ese coste de
+creación/destrucción — no el trabajo en sí — era lo que aparecía como
+ráfagas de CPU. La versión con pool fijo (workers creados una sola vez al
+arrancar) mejoró justo eso — la comparación completa, con números reales,
+está más abajo.
 
-| N | `MAX_PARALLEL` | tiempo total | completadas | CPU app (pico) | RAM app (antes → durante) |
-| --- | --- | --- | --- | --- | --- |
-| 1 | 200 | 9.6s | 1/1 | 0.1% | 58.7 → 63.5 MiB |
-| 10 | 200 | 9.2s | 10/10 | 0.8% | 63.5 → 63.8 MiB |
-| 200 | 200 | 11.5s | 199/200 | 13.7% | 63.5 → 71.4 MiB |
-| 1000 | 200 (con límite) | **43.1s** | 994/1000 | 65.3%* | 70.9 → 127.9 MiB |
-| 1000 | 0 (sin límite) | **12.9s** | 1000/1000 | 97.6%* | 58.8 → 116.7 MiB |
+Repetí las mismas corridas con los tres diseños (actor-por-investigación
+en un proceso único; pool fijo en un proceso único; pool fijo repartido
+en `app`+`worker` separados, el estado actual), contra los mismos
+contenedores, Postgres limpio antes de cada una:
 
-\* Cifra de `docker stats` muestreado cada 3s — demasiado grueso para ver
-la forma real del pico. Repetido con muestreo de `/proc/<pid>/stat` cada
-~0.2s (ver "¿Son normales los picos de CPU?" más abajo): en realidad son
-**dos** ráfagas cortas de ~1-1.5s cada una (una al crear las 1000
-investigaciones, otra cuando la mayoría termina casi a la vez), no un
-único pico ni una meseta sostenida.
+| Escenario | v1: actor por investigación (1 proceso) | v2: pool fijo (1 proceso) | v3: pool fijo, `app`+`worker` separados |
+| --- | --- | --- | --- |
+| N=1 | 9.6s · CPU 0.1% | 7.6s · CPU 0.1% | — |
+| N=10 | 9.2s · CPU 0.8% | 8.7s · CPU 0.6% | — |
+| N=200 | 11.5s · CPU pico 13.7% · 199/200 | 11.3s · CPU pico 15.0% · 199/200 | 11.9s · CPU pico `app` 18.8% / `worker` 7.6% · 198/200 |
+| **N=1000, `MAX_PARALLEL=200`** | **43.1s · CPU pico 65.3% · RAM pico 128 MiB · 994/1000** | **48.5s · CPU pico 42.1% · RAM pico 97 MiB · 1000/1000** | **46.8s · CPU pico `app` 51.2% / `worker` 15.3% · RAM `app` 95 MiB / `worker` ~41 MiB · 997/1000** |
+| N=1000, pool = N (sin cola) | 12.9s · CPU pico 97.6% · RAM pico 117 MiB · 1000/1000 | 13.5s · CPU pico 89-98%\* · RAM pico 108 MiB · 1000/1000 | — |
+
+\* Con el pool ya del mismo tamaño que N, no hay ninguna cola que
+suavizar — la ráfaga de CPU que queda ahí ya no es "crear 1000 actores"
+(eso pasó una vez, al arrancar, antes de la prueba), sino simplemente
+atender 1000 conexiones HTTP nuevas y hacer ~2000 idas y vueltas a
+Postgres (INSERT + SELECT de catch-up) casi al mismo tiempo — un coste
+que existiría igual con cualquier framework, no algo que el diseño de
+actores pueda evitar.
 
 ### Lecturas
 
-- **1, 10 y 200 tardan prácticamente lo mismo** (~9-12s) que una sola
-  investigación suelta — es la prueba de que sí hay paralelismo real, no
-  solo concurrencia aparente: cada investigación tiene su propio actor,
-  su propio mailbox y su propia tarea de asyncio, así que sus `sleep(1-3s)`
-  se solapan de verdad.
-- **1000 con el límite de 200 tarda ~4.5x más** (43.1s vs ~12s) — exactamente
-  lo esperable: con 1000 investigaciones × 4 pasos = 4000 "llamadas a la
-  IA" repartidas en tandas de 200 en vuelo a la vez, el tiempo total crece
-  con el número de tandas, no con el número de investigaciones. Esto es
-  el semáforo haciendo su trabajo, no lapinbeam quedándose corto.
-- **1000 sin límite vuelve a tardar ~13s** — casi igual que 1 sola. Con
-  la única "carga" real siendo `asyncio.sleep()` (I/O simulado, cero CPU
-  real), asyncio intercala miles de esperas en el mismo hilo sin coste
-  añadido relevante. Aquí es donde se ve que **el cuello de botella nunca
-  fue el proceso Python ni lapinbeam** — fue el límite que le pusimos a
-  propósito.
-- **RAM crece de forma acotada y modesta**: de ~60-70 MiB en reposo a
-  ~115-130 MiB con 1000 investigaciones concurrentes vivas a la vez — del
-  orden de 50-70 KiB por investigación (actor + mailbox + fila en la
-  pubsub en memoria), nada que preocupe hasta órdenes de magnitud mucho
-  mayores.
-- **Sin picos de CPU sostenidos ni con 1000 en paralelo** — ver el
-  desglose fino en la siguiente sección.
-- **Un puñado de fallos (0.5-0.6%) en las corridas de 200 y 1000-limitado**:
-  "servidor desconectado sin respuesta" en 1-6 conexiones de las
-  cientos/miles abiertas de golpe. Coincide en el tiempo con la primera
-  ráfaga de CPU (ver abajo): mientras el único hilo del event loop está
-  ocupado con el coste síncrono de crear 1000 actores de golpe, no puede
-  atender el accept() de nuevas conexiones TCP tan rápido, y si la cola
-  de espera del sistema operativo se llena en esa ventana de ~1s, alguna
-  conexión entrante se pierde — no es un fallo de lapinbeam ni de la
-  lógica de la investigación (Postgres confirma 0 filas en estado `error`
-  tras cada corrida). En producción con tráfico real (llegadas repartidas
-  en el tiempo, no una ráfaga sincronizada de un script de carga) esto no
-  debería aparecer; si aparece, `uvicorn --backlog` o varios workers
-  detrás de un balanceador lo resuelven.
-
-### ¿Son normales los picos de CPU?
-
-Repetí la corrida de N=1000 sin límite midiendo `/proc/<pid>/stat` del
-proceso de uvicorn cada ~0.2s (mucho más fino que los `docker stats` de
-la tabla de arriba, que solo muestrean cada 3s y por eso no distinguían
-esto). La forma real es esta:
-
-```
-t=0.0-0.6s   ~0%       (conexiones llegando, aún no hay trabajo real)
-t=0.6-2.0s   86-102%   ráfaga #1: crear 1000 actores (clase Python nueva
-                       por investigación, registro en el core Rust vía
-                       PyO3, 1000 INSERT a Postgres repartidos en un pool
-                       de 20 conexiones)
-t=2.0-7.3s    9-14%    en reposo: 1000 actores solo esperando en
-                       asyncio.sleep(), que no cuesta CPU real
-t=7.5-8.9s   70-104%   ráfaga #2: la mayoría de las 1000 terminan casi a
-                       la vez (arrancaron juntas y tienen duraciones
-                       parecidas) — UPDATE final a Postgres + cierre del
-                       actor + cierre de 1000 streams SSE, todo junto
-t=9-13s      36→0%     cola de las que tardaron más en terminar, cada vez
-                       menos solapadas
-```
-
-Dos ráfagas cortas (~1-1.5s cada una), no una meseta — y **importa cómo
-mide `docker stats` el CPU**: `100%` significa "un core entero ocupado",
-no "toda la máquina" (esta prueba corrió en una máquina de 12 cores, así
-que ni el pico más alto llega al 10% de la capacidad total).
-
-Es normal, y es normal **precisamente por lo sintético del test**: las
-1000 investigaciones se crean todas en el mismo instante y tienen
-duraciones parecidas (mismo rango `uniform(1,3)` × 4 pasos), así que
-tienden a *terminar* todas casi a la vez también — de ahí las dos
-ráfagas, una en la creación y otra en el cierre. Tráfico real, con
-investigaciones llegando repartidas a lo largo del tiempo en vez de en
-una ráfaga sincronizada, no produciría este patrón de "doble joroba" —
-se aplanaría en un uso de CPU mucho más constante y bajo. Lo que sí vale
-la pena quedarse: en ningún momento hay una meseta sostenida de CPU alta,
-lo cual habría sido la señal real de un problema (indicaría que el
-*trabajo en sí*, no solo su arranque/cierre, fuera costoso).
+- **La mejora del pool fijo frente al actor-por-investigación se
+  mantiene al separar `app` y `worker`**: con 1000 investigaciones y
+  `MAX_PARALLEL=200`, v3 completa 997/1000 (v1: 994/1000) en un tiempo
+  comparable a v1 y v2, sin que ningún contenedor se acerque a saturar su
+  CPU (picos de 51% y 15%, en una máquina de 12 cores).
+- **La CPU se reparte según el rol de cada contenedor**: `app` (HTTP +
+  reenvío de SSE) siempre pica más alto que `worker` (el trabajo real) —
+  en la corrida de 1000, 51.2% contra 15.3%. Tiene sentido: gestionar
+  1000 conexiones HTTP entrantes y sus streams SSE es más caro que
+  ejecutar `asyncio.sleep()` 4000 veces. Es exactamente la separación de
+  responsabilidades que se buscaba al partir el proceso en dos.
+- **`worker` apenas mueve su RAM bajo carga** (~39→41 MiB durante toda la
+  corrida de 1000) — el pool de actores es un coste fijo pagado al
+  arrancar; procesar más o menos investigaciones no lo cambia. Toda la
+  variación de RAM ocurre en `app` (69→95 MiB), donde sí crece con el
+  número de conexiones HTTP/SSE abiertas a la vez.
+- **Separar procesos tiene un coste fijo pequeño**: dos runtimes Python
+  separados (cada uno con su propio intérprete, su propio asyncio, su
+  propia conexión a Postgres) pesan un poco más en conjunto que uno
+  solo — normal y esperable, es el precio de poder reiniciar/escalar cada
+  pieza por separado.
+- Los picos de CPU que quedan siguen siendo el mismo artefacto que ya se
+  documentó antes: ráfagas cortas (~1-1.5s) por lo sincronizado del propio
+  test (1000 investigaciones naciendo y terminando casi a la vez), no una
+  meseta sostenida — con tráfico real, repartido en el tiempo, esto se
+  aplanaría.
 
 ## Lo que este ejemplo no resuelve (y por qué es aceptable aquí)
 
-- **`Supervisor._children` acumula un registro pequeño por cada
-  investigación terminada** (el `ret.task.cancel()` libera el mailbox y
-  la tarea, pero no saca el registro de la lista interna del
-  `Supervisor`) — unos pocos cientos de bytes por investigación, no un
-  problema a la escala probada aquí, pero si el servidor va a vivir
-  semanas procesando investigaciones sin parar, valdría la pena reciclar
-  el `Supervisor` periódicamente.
-- **Un único proceso, un único `Node`.** Como la carga es I/O-bound (solo
-  espera de red simulada), esto basta para las escalas probadas. Si el
-  trabajo real de "consultar a la IA" tuviera cómputo pesado de verdad
-  (no solo esperar una respuesta HTTP), haría falta repartir entre varios
-  procesos/`Node` — ver
-  [Patrones inspirados en OTP](../../docs/otp-patterns.md) para cómo
-  lapinbeam soporta eso sin cambiar el modelo de actor por investigación.
+- **Un único `worker`.** Si se cae, ninguna investigación nueva se
+  procesa hasta que vuelva (las ya encoladas en Postgres como
+  `en_progreso` se quedan huérfanas hasta entonces) — `docker compose`
+  lo reinicia solo, pero no hay redundancia real. Para eso haría falta
+  más de un `worker` detrás de un mecanismo de reparto — `app` podría
+  conectarse a varios y elegir uno por `round_robin`/salud, o los propios
+  `worker` podrían coordinarse con `lapinbeam.registry` (ver
+  [Patrones inspirados en OTP](../../docs/otp-patterns.md)) para que solo
+  uno se anuncie como activo a la vez.
+- **Reparto por cola compartida, no por prioridad.** Todas las
+  investigaciones son iguales para el pool — no hay forma de decir "esta
+  es más urgente, procésala antes que las que ya están en cola". Para
+  eso haría falta una cola con prioridad en vez de un `asyncio.Queue`
+  simple.
