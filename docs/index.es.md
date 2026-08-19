@@ -55,15 +55,12 @@ quieras los dos en el mismo sistema.
   conectarse transitivamente a todo lo que ese nodo (y todo lo que él a su
   vez conoce) tiene conectado — ver
   [Ejemplos](examples.es.md#descubrimiento-de-nodos-via-nodo-semilla).
-- Árboles de supervisión anidados: `Supervisor.spawn_supervisor()` permite
-  que un `Supervisor` supervise a otro `Supervisor`.
-- Links bidireccionales (`lapinbeam.links`) y monitors unidireccionales y
-  no letales (`lapinbeam.monitors`), tanto locales como entre nodos — sin
-  cambios en el protocolo de red en ninguno de los dos casos.
-- Grupos de proceso con nombre a nivel de clúster (`lapinbeam.groups`) y
-  registro de nombres únicos a nivel de clúster (`lapinbeam.registry`),
-  tanto locales como entre nodos — sin cambios en el protocolo de red en
-  ninguno de los dos casos.
+- Árboles de supervisión anidados, links bidireccionales, monitors
+  unidireccionales y no letales, grupos de proceso a nivel de clúster, y
+  registro de nombres únicos a nivel de clúster
+  (`lapinbeam.links`/`monitors`/`groups`/`registry`) — todo local y entre
+  nodos, sin cambios en el protocolo de red — ver
+  [Patrones inspirados en OTP](otp-patterns.es.md).
 
 ## Seguridad
 

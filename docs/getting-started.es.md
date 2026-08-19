@@ -349,5 +349,7 @@ pueden encolar para un peer cuya escritura TCP está congestionada.
 defecto una vez que se fija — ver `"mailbox_full"` arriba.
 
 Siguiente: [Mensajes tipados](typed-messages.md) para enviar tipos reales de
-Python en vez de dicts, o [Benchmarks](benchmarks.md) para saber cuánto
-cuesta esto en latencia y throughput.
+Python en vez de dicts, [Patrones inspirados en OTP](otp-patterns.es.md)
+para árboles de supervisión, links, monitors, grupos y registro de
+nombres a nivel de clúster, o [Benchmarks](benchmarks.md) para saber
+cuánto cuesta esto en latencia y throughput.

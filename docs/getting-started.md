@@ -339,5 +339,7 @@ that changes default behavior in a real way once set — see
 `"mailbox_full"` above.
 
 Next: [Typed messages](typed-messages.md) for sending real Python types
-instead of dicts, or [Benchmarks](benchmarks.md) for what this costs you in
-latency and throughput.
+instead of dicts, [OTP-inspired patterns](otp-patterns.md) for supervision
+trees, links, monitors, groups, and cluster-wide name registration, or
+[Benchmarks](benchmarks.md) for what this costs you in latency and
+throughput.

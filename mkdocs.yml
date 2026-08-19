@@ -48,6 +48,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Typed messages: typed-messages.md
+  - OTP-inspired patterns: otp-patterns.md
   - lapinbeam vs. Celery + RabbitMQ: vs-celery-rabbitmq.md
   - Benchmarks: benchmarks.md
   - Examples: examples.md
@@ -69,6 +70,7 @@ plugins:
             Home: Inicio
             Getting started: Primeros pasos
             Typed messages: Mensajes tipados
+            OTP-inspired patterns: Patrones inspirados en OTP
             lapinbeam vs. Celery + RabbitMQ: lapinbeam frente a Celery + RabbitMQ
             Benchmarks: Benchmarks
             Examples: Ejemplos

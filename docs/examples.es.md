@@ -151,63 +151,15 @@ docker compose up --build
 
 ## Árboles de supervisión, links, monitors, grupos y registro de nombres entre nodos reales
 
-`Supervisor.spawn_supervisor()` (árboles de supervisión anidados),
-`lapinbeam.links` (links bidireccionales), `lapinbeam.monitors` (monitors
-unidireccionales y no letales), `lapinbeam.groups` (grupos de proceso a
-nivel de clúster) y `lapinbeam.registry` (registro de nombres únicos a
-nivel de clúster) funcionan igual en local o entre nodos, sin ningún
-cambio en el protocolo de red en ninguno de los cinco casos — el tráfico
-entre nodos de los cinco viaja como frames `Data` corrientes dirigidos a
-un actor local reservado, el mismo truco que ya usa `lapinbeam.discovery`:
-
-```python
-from lapinbeam import (
-    ActorRef, Down, Exit, Node, RemoteRef, Supervisor, actor, on,
-    link, trap_exit, register_links,
-    monitor, register_monitors,
-    join_group, members, register_groups,
-    register_name, whereis_name, register_registry,
-)
-
-node = Node("app@app:9100")
-await node.start()
-sup = Supervisor(node=node)
-register_links(node, sup)
-register_monitors(node, sup)
-register_groups(node, sup)
-register_registry(node, sup)
-
-
-@actor(name="watcher")
-class Watcher:
-    @on(Exit)
-    async def on_exit(self, msg: Exit):
-        print("el actor enlazado salió:", msg.actor, msg.reason)
-
-    @on(Down)
-    async def on_down(self, msg: Down):
-        print("el actor monitorizado salió:", msg.actor, msg.reason)
-
-
-ref: ActorRef = sup.spawn(Watcher)
-await node.connect_peer("worker@worker:9101")
-other: RemoteRef = node.get_remote_actor("worker@worker:9101", "task_worker")
-# trap_exit() debe llamarse desde dentro del actor — p.ej. en su primer
-# handler.
-await link(other)                          # link entre nodos (mata/atrapa al salir), sin cambios en el núcleo
-ref_monitor: str = await monitor(other)    # monitor entre nodos (nunca mata, nunca lo matan)
-await join_group(node, "watchers", ref=ref)   # pertenencia a grupo, todo el clúster
-encontrados: list[ActorRef | RemoteRef] = members(node, "watchers")
-await register_name(node, "leader", ref=ref)  # nombre único, todo el clúster
-propietario: ActorRef | RemoteRef | None = whereis_name(node, "leader")
-```
-
-`examples/cluster_supervision/` ejecuta las cinco cosas a la vez con tres
-contenedores reales — un `hub` con un árbol de supervisión anidado que se
-enlaza **y** monitoriza a dos workers (así la misma caída entrega tanto un
-`Exit` como un `Down`) y vigila un grupo `"workers"` a nivel de clúster y
-el nombre registrado `"task_worker_primary"` mientras cada worker falla
-para siempre:
+Ver [Patrones inspirados en OTP](otp-patterns.es.md) para la API y
+fragmentos independientes de árboles de supervisión anidados,
+`lapinbeam.links`, `lapinbeam.monitors`, `lapinbeam.groups` y
+`lapinbeam.registry`. `examples/cluster_supervision/` ejecuta las cinco
+cosas a la vez con tres contenedores reales — un `hub` con un árbol de
+supervisión anidado que se enlaza **y** monitoriza a dos workers (así la
+misma caída entrega tanto un `Exit` como un `Down`) y vigila un grupo
+`"workers"` a nivel de clúster y el nombre registrado
+`"task_worker_primary"` mientras cada worker falla para siempre:
 
 ```bash
 cd examples/cluster_supervision

@@ -149,57 +149,9 @@ docker compose up --build
 
 ## Supervision trees, links, monitors, groups, and a name registry across real nodes
 
-`Supervisor.spawn_supervisor()` (nested supervision trees), `lapinbeam.links`
-(bidirectional links), `lapinbeam.monitors` (one-way, non-lethal monitors),
-`lapinbeam.groups` (cluster-wide process groups), and `lapinbeam.registry`
-(cluster-wide unique name registration) all work the same locally or across
-nodes, with no wire protocol changes for any of them — cross-node traffic for
-all five rides as ordinary `Data` frames to a reserved local actor name, the
-same trick `lapinbeam.discovery` already uses:
-
-```python
-from lapinbeam import (
-    ActorRef, Down, Exit, Node, RemoteRef, Supervisor, actor, on,
-    link, trap_exit, register_links,
-    monitor, register_monitors,
-    join_group, members, register_groups,
-    register_name, whereis_name, register_registry,
-)
-
-node = Node("app@app:9100")
-await node.start()
-sup = Supervisor(node=node)
-register_links(node, sup)
-register_monitors(node, sup)
-register_groups(node, sup)
-register_registry(node, sup)
-
-
-@actor(name="watcher")
-class Watcher:
-    @on(Exit)
-    async def on_exit(self, msg: Exit):
-        print("linked actor exited:", msg.actor, msg.reason)
-
-    @on(Down)
-    async def on_down(self, msg: Down):
-        print("monitored actor exited:", msg.actor, msg.reason)
-
-
-ref: ActorRef = sup.spawn(Watcher)
-await node.connect_peer("worker@worker:9101")
-other: RemoteRef = node.get_remote_actor("worker@worker:9101", "task_worker")
-# trap_exit() must run from inside the actor — e.g. its first handler call.
-await link(other)                       # cross-node link (kills/traps on exit), no core changes
-monitor_ref: str = await monitor(other)  # cross-node monitor (never kills, never gets killed)
-await join_group(node, "watchers", ref=ref)   # cluster-wide group membership
-found: list[ActorRef | RemoteRef] = members(node, "watchers")
-print(found)                                  # -> [ActorRef/RemoteRef, ...]
-await register_name(node, "leader", ref=ref)  # cluster-wide unique name
-owner: ActorRef | RemoteRef | None = whereis_name(node, "leader")
-print(owner)                                  # -> ActorRef/RemoteRef or None
-```
-
+See [OTP-inspired patterns](otp-patterns.md) for the API and standalone
+snippets for nested supervision trees, `lapinbeam.links`,
+`lapinbeam.monitors`, `lapinbeam.groups`, and `lapinbeam.registry`.
 `examples/cluster_supervision/` runs all five across three real
 containers — a `hub` with a nested supervision tree that links **and**
 monitors two workers (so the same crash delivers both an `Exit` and a
