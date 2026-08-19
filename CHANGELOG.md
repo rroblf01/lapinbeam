@@ -43,7 +43,18 @@ of `1.0.0`, a breaking change requires a major version bump.
   `n_workers`, for genuinely CPU-bound work (auto-replies with the
   handler's return value for `ask()`/`ask_stream()` callers) —
   `executor="process"` doesn't support an `@actor` class handler and
-  requires a picklable, module-level `handler`. See
+  requires a picklable, module-level `handler`. `spawn_pool()` itself now
+  returns an object that's both awaitable (`pool = await
+  sup.spawn_pool(...)`, as before) and an async context manager
+  (`async with sup.spawn_pool(...) as pool:`, which calls `pool.stop()`
+  on the way out) — and the resulting `PoolRef` gained two methods:
+  `pool.map(items)`, `asyncio.gather()` over `ask()` for every item in
+  order (with `return_exceptions` passed through); and `pool.stop()`,
+  which tears down just this pool's dispatcher and workers (shutting down
+  its executor too, if it has one) without touching anything else on the
+  same `Supervisor`, and frees `name` for a later `spawn_pool()` call —
+  for a server that creates and destroys pools over its lifetime instead
+  of keeping one fixed at startup. See
   [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
   for when a pool — and which handler shape and option — is the right
   tool.

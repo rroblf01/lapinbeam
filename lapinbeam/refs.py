@@ -222,9 +222,15 @@ class PoolRef:
     same pool exactly the same way.
     """
 
-    def __init__(self, dispatcher_ref, worker_refs):
+    def __init__(self, dispatcher_ref, worker_refs, supervisor=None):
         self._dispatcher = dispatcher_ref
         self._workers = worker_refs
+        # Internal: lets stop() remove this pool's actors from the owning
+        # Supervisor's child list once they're torn down, instead of
+        # leaving dead entries behind for a Supervisor that keeps running
+        # (e.g. a server that creates/destroys pools dynamically). `None`
+        # for a PoolRef built by hand rather than via `spawn_pool()`.
+        self._supervisor = supervisor
 
     @property
     def name(self):
@@ -250,6 +256,76 @@ class PoolRef:
         """Like `ActorRef.ask_stream()`, answered by whichever worker
         handles `msg`."""
         return self._dispatcher.ask_stream(msg, timeout=timeout)
+
+    async def map(self, items, timeout=5.0, return_exceptions=False):
+        """Sends every item in `items` and waits for all replies, in the
+        same order as `items` (not completion order) — the `ask()`
+        equivalent of `concurrent.futures.Executor.map()`. Shorthand for:
+
+            await asyncio.gather(*(pool.ask(item, timeout=timeout) for item in items))
+
+        `return_exceptions` is passed straight through to
+        `asyncio.gather()`: `False` (default) lets the first exception
+        (e.g. a `TimeoutError` from one slow item) propagate immediately;
+        `True` collects every result *or* exception into the returned
+        list instead, so one bad item doesn't hide the others' answers.
+        """
+        return await asyncio.gather(
+            *(self.ask(item, timeout=timeout) for item in items),
+            return_exceptions=return_exceptions,
+        )
+
+    async def stop(self):
+        """Tears down just this pool — the dispatcher and every worker —
+        without affecting anything else spawned on the same `Supervisor`.
+        Cancels their tasks (same as `Supervisor.shutdown()` does for a
+        whole Supervisor, scoped here to this pool's actors only), waits
+        for them to actually stop, then removes them from the owning
+        Supervisor's child list so it stops accounting for them (e.g. in
+        `one_for_all`/`rest_for_one` sweeps or restart-budget bookkeeping).
+        A worker using `executor=` shuts its `ThreadPoolExecutor`/
+        `ProcessPoolExecutor` down as part of its own cancellation
+        cleanup — nothing extra to do here for that.
+
+        After `stop()`, `send()`/`ask()`/`ask_stream()` on this `PoolRef`
+        fail with a plain `ValueError` (no local actor by that name) —
+        same as addressing any other actor that was never spawned or has
+        already exited. `name` becomes free for a new `spawn_pool()` call
+        to reuse, e.g. for a server that creates and destroys pools over
+        its lifetime rather than keeping one fixed pool for the whole
+        process.
+
+        Also usable as an async context manager: `async with pool: ...`
+        calls `stop()` on the way out.
+
+        Calling `stop()` in the very same synchronous continuation as
+        `spawn_pool()`'s return, with no `await` of any kind for the pool
+        in between, is the one case worth knowing about: a just-created
+        task hasn't had a turn on the event loop yet, and cancelling it
+        before its first turn skips its own cleanup code (the line that
+        actually calls `unregister_actor()`) — same as cancelling any
+        freshly `spawn()`ed actor's `.task` the same way. In practice this
+        never comes up, since doing anything with a pool at all — a
+        `send()`/`ask()` that's actually answered, a `wait_until`-style
+        poll — gives every pending task its first turn as a side effect.
+        """
+        refs = [self._dispatcher, *self._workers]
+        tasks = [ref.task for ref in refs if ref.task is not None]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._supervisor is not None:
+            for ref in refs:
+                if ref._child is not None:
+                    self._supervisor._discard_child(ref._child)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.stop()
+        return False
 
     def __repr__(self):
         return f"<PoolRef {self.name!r} ({self.size} workers)>"

@@ -406,3 +406,124 @@ async def test_pool_key_error_reported_without_crashing_dispatcher():
         await wait_until(lambda: len(processed) == 1, timeout=2.0)
     finally:
         await node.stop()
+
+
+async def test_pool_map_returns_results_in_order():
+    from lapinbeam import current_message
+
+    async def handler(msg):
+        await asyncio.sleep(0.05 if msg["n"] == 0 else 0.001)  # first item is slowest
+        await current_message().reply(msg["n"] * 10)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(handler, 4, name="pool_map")
+        results = await pool.map([{"n": i} for i in range(4)])
+        # Order matches input order, not completion order, even though
+        # item 0 finishes last.
+        assert results == [0, 10, 20, 30]
+    finally:
+        await node.stop()
+
+
+async def test_pool_map_return_exceptions_collects_errors_instead_of_raising():
+    from lapinbeam import current_message
+
+    async def handler(msg):
+        if msg["n"] == 2:
+            raise RuntimeError("bad item")
+        await current_message().reply(msg["n"])
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(handler, 3, name="pool_map_err")
+        results = await pool.map(
+            [{"n": i} for i in range(4)], timeout=0.5, return_exceptions=True
+        )
+        assert results[0] == 0
+        assert isinstance(results[2], TimeoutError)  # handler raised before replying
+        assert results[3] == 3
+    finally:
+        await node.stop()
+
+
+async def test_pool_stop_tears_down_actors_and_frees_the_name():
+    from lapinbeam import current_message
+
+    async def handler(msg):
+        await current_message().reply("ok")
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(handler, 3, name="pool_stop")
+        # A real round trip forces every worker's task to actually run at
+        # least once before we tear the pool down — a freshly created
+        # task cancelled before its first turn never reaches its own
+        # cleanup code (same as cancelling any brand new spawn()ed
+        # actor's task with nothing awaited in between).
+        assert await pool.ask({"x": 0}) == "ok"
+        dispatcher_task = pool._dispatcher.task
+        worker_tasks = [w.task for w in pool._workers]
+        assert "pool_stop" in node._mailboxes
+
+        await pool.stop()
+
+        await wait_until(lambda: dispatcher_task.done(), timeout=2.0)
+        assert all(t.done() for t in worker_tasks)
+        assert "pool_stop" not in node._mailboxes
+        assert not any(c.name == "pool_stop" for c in sup._children)
+
+        # Sending to a stopped pool fails loudly instead of silently
+        # vanishing.
+        try:
+            await pool.send({"x": 1})
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+        # The name is free again for a brand new pool.
+        pool2 = await sup.spawn_pool(handler, 2, name="pool_stop")
+        await pool2.send({"x": 1})
+    finally:
+        await node.stop()
+
+
+async def test_pool_stop_shuts_down_its_executor():
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(_square, 2, name="pool_stop_exec", executor="thread")
+        assert await pool.ask({"n": 3}) == 9
+        await pool.stop()
+        # A fresh pool under a different name still works — proves the
+        # first pool's executor shutdown didn't wedge anything global.
+        pool2 = await sup.spawn_pool(_square, 2, name="pool_stop_exec_2", executor="thread")
+        assert await pool2.ask({"n": 4}) == 16
+    finally:
+        await node.stop()
+
+
+async def test_spawn_pool_as_async_context_manager_stops_on_exit():
+    from lapinbeam import current_message
+
+    async def handler(msg):
+        await current_message().reply("ok")
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        async with sup.spawn_pool(handler, 2, name="pool_ctx") as pool:
+            assert isinstance(pool, PoolRef)
+            assert await pool.ask({"x": 1}) == "ok"
+            assert "pool_ctx" in node._mailboxes
+        assert "pool_ctx" not in node._mailboxes
+    finally:
+        await node.stop()

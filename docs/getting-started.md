@@ -226,6 +226,50 @@ leave some workers idle while others queue up — this isn't the tool for
 balancing raw throughput, only for the cases where ordering matters more
 than perfectly even load.
 
+### Collecting several answers: `pool.map()`
+
+`asyncio.gather()` over several `ask()` calls is already the tool for
+"wait for N independent replies at once" (mentioned above) — `pool.map()`
+is that same pattern spelled out as one call, when every item is going to
+the *same* pool:
+
+```python
+results = await pool.map([{"id": i} for i in range(5)])
+```
+
+Results come back in the same order as the input items, not completion
+order — the third result is always the third item's answer, even if it
+happened to finish first. Pass `return_exceptions=True` to get every
+result *or* exception back in the list instead of letting the first
+failure (e.g. a per-item `TimeoutError`) abort the whole batch.
+
+### Tearing down one pool: `pool.stop()`
+
+A pool spawned with `spawn_pool()` normally lives as long as its
+`Supervisor` does. If a server creates and destroys pools over its
+lifetime instead of keeping one fixed at startup, `pool.stop()` tears
+down just that pool's dispatcher and workers (and shuts down its
+`ThreadPoolExecutor`/`ProcessPoolExecutor`, if it has one) without
+touching anything else on the same `Supervisor` — and frees `name` for a
+later `spawn_pool()` call to reuse:
+
+```python
+pool = await sup.spawn_pool(process, 5, name="processors")
+...
+await pool.stop()
+```
+
+Or, scoped automatically to a block — `spawn_pool()`'s return value is
+both awaitable and an async context manager:
+
+```python
+async with sup.spawn_pool(process, 5, name="processors") as pool:
+    for i in range(5):
+        await pool.send({"id": i})
+    await asyncio.sleep(2)
+# pool.stop() already called here
+```
+
 !!! warning "This parallelism is for I/O-bound work, not CPU-bound work — unless you ask for an executor"
     A pool helps because `await asyncio.sleep(...)` (or a network call, or
     any other `await` that actually yields control) lets asyncio interleave

@@ -62,6 +62,53 @@ class _SupervisorChild:
         self.task = None
 
 
+class _PoolSpawn:
+    """Returned by `Supervisor.spawn_pool()`. Awaitable — `pool = await
+    sup.spawn_pool(...)` — and an async context manager — `async with
+    sup.spawn_pool(...) as pool: ...`, which calls `pool.stop()` on the
+    way out — since spawning a pool needs an `await` (each worker needs
+    one real message to start its loop) but `spawn_pool()` itself can't
+    be a plain `async def` and *also* support `async with` on its call
+    expression. Building the pool only happens once, on first
+    await/`__aenter__`, even if a caller somehow used both on the same
+    object."""
+
+    __slots__ = ("_supervisor", "_handler", "_n_workers", "_args", "_name",
+                 "_queue_capacity", "_executor", "_key", "_kwargs", "_pool")
+
+    def __init__(self, supervisor, handler, n_workers, args, name,
+                 queue_capacity, executor, key, kwargs):
+        self._supervisor = supervisor
+        self._handler = handler
+        self._n_workers = n_workers
+        self._args = args
+        self._name = name
+        self._queue_capacity = queue_capacity
+        self._executor = executor
+        self._key = key
+        self._kwargs = kwargs
+        self._pool = None
+
+    async def _build(self):
+        if self._pool is None:
+            self._pool = await self._supervisor._spawn_pool(
+                self._handler, self._n_workers, self._args, self._name,
+                self._queue_capacity, self._executor, self._key, self._kwargs,
+            )
+        return self._pool
+
+    def __await__(self):
+        return self._build().__await__()
+
+    async def __aenter__(self):
+        return await self._build()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._pool is not None:
+            await self._pool.stop()
+        return False
+
+
 class Supervisor:
     """Owns actor (and nested Supervisor) lifecycle. On crash, restarts
     according to `strategy`:
@@ -121,8 +168,8 @@ class Supervisor:
         node._register_task(child.task)
         return ActorRef(node, name, child=child)
 
-    async def spawn_pool(self, handler, n_workers, *args, name,
-                          queue_capacity=None, executor=None, key=None, **kwargs):
+    def spawn_pool(self, handler, n_workers, *args, name,
+                    queue_capacity=None, executor=None, key=None, **kwargs):
         """Spawns a *fixed* pool of `n_workers` actors sharing one queue —
         the pattern `examples/order_stream/` used to build by hand before
         this existed: a reserved "dispatcher" actor (named `name`, the one
@@ -130,9 +177,21 @@ class Supervisor:
         just drops incoming messages on a shared `asyncio.Queue`, and
         `n_workers` persistent actors pulling from it — whichever is free
         next picks up the next message, not round-robin (unless `key` is
-        given — see below). Returns a `PoolRef`. Async, unlike `spawn()`:
-        each worker needs one real message to start its loop, and that has
-        to be awaited.
+        given — see below).
+
+        Unlike `spawn()`, this can't hand back a ready `PoolRef`
+        synchronously — each worker needs one real message to start its
+        loop, and that has to be awaited. So `spawn_pool()` itself returns
+        an object that's both awaitable and an async context manager,
+        whichever reads better at the call site:
+
+            pool = await sup.spawn_pool(handler, 5, name="processors")
+            ...
+            await pool.stop()                    # tear down just this pool
+
+            async with sup.spawn_pool(handler, 5, name="processors") as pool:
+                ...
+            # pool.stop() already called on the way out
 
         `handler` is either a plain async function or an `@actor`-decorated
         class:
@@ -218,7 +277,19 @@ class Supervisor:
         for why a single actor never parallelizes itself. `name` is
         required (not derived from `handler` automatically) so two pools
         never collide by accident — actor names must be unique per node.
+
+        The returned `PoolRef` also has `map(items)` — `asyncio.gather()`
+        over `ask()` for every item, in order — for "send N independent
+        items, collect N results" without writing the `gather()` out by
+        hand; and `stop()` to tear down just this pool's dispatcher and
+        workers (and, with `executor=`, its thread/process pool) without
+        touching anything else on this `Supervisor` — useful for a server
+        that creates and destroys pools over its lifetime rather than
+        keeping one fixed at startup.
         """
+        return _PoolSpawn(self, handler, n_workers, args, name, queue_capacity, executor, key, kwargs)
+
+    async def _spawn_pool(self, handler, n_workers, args, name, queue_capacity, executor, key, kwargs):
         node = self.node
         is_actor_cls = inspect.isclass(handler) and hasattr(handler, "__lapinbeam_actor__")
         maxsize = queue_capacity or 0
@@ -341,7 +412,7 @@ class Supervisor:
             ref = self.spawn(_build_worker(i))
             await ref.send({"start": True})
             worker_refs.append(ref)
-        return PoolRef(dispatcher_ref, worker_refs)
+        return PoolRef(dispatcher_ref, worker_refs, supervisor=self)
 
     def spawn_supervisor(self, name, build, *, strategy="one_for_one",
                           max_restarts=3, restart_window=5.0):

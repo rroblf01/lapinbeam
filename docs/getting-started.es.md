@@ -232,6 +232,51 @@ compromiso: una distribución de claves desigual (unas pocas claves muy
 esta no es la herramienta para repartir throughput de forma uniforme, solo
 para los casos en los que el orden importa más que la carga equilibrada.
 
+### Recoger varias respuestas: `pool.map()`
+
+`asyncio.gather()` sobre varios `ask()` ya es la herramienta para
+"esperar N respuestas independientes a la vez" (mencionado arriba) —
+`pool.map()` es ese mismo patrón resumido en una sola llamada, cuando
+todos los elementos van al *mismo* pool:
+
+```python
+results = await pool.map([{"id": i} for i in range(5)])
+```
+
+Los resultados llegan en el mismo orden que los elementos de entrada, no
+en orden de finalización — el tercer resultado siempre es la respuesta
+del tercer elemento, aunque haya sido el primero en terminar. Pasa
+`return_exceptions=True` para recibir en la lista cada resultado *o*
+excepción en vez de dejar que el primer fallo (p.ej. un `TimeoutError` de
+un elemento) aborte todo el lote.
+
+### Parar un solo pool: `pool.stop()`
+
+Un pool creado con `spawn_pool()` normalmente vive lo mismo que su
+`Supervisor`. Si un servidor crea y destruye pools a lo largo de su vida
+en vez de mantener uno fijo desde el arranque, `pool.stop()` para solo el
+dispatcher y los workers de ese pool (y apaga su
+`ThreadPoolExecutor`/`ProcessPoolExecutor`, si tiene uno) sin tocar nada
+más de ese mismo `Supervisor` — y libera `name` para que una llamada
+posterior a `spawn_pool()` lo reutilice:
+
+```python
+pool = await sup.spawn_pool(process, 5, name="processors")
+...
+await pool.stop()
+```
+
+O acotado automáticamente a un bloque — lo que devuelve `spawn_pool()` es
+a la vez awaitable y gestor de contexto async:
+
+```python
+async with sup.spawn_pool(process, 5, name="processors") as pool:
+    for i in range(5):
+        await pool.send({"id": i})
+    await asyncio.sleep(2)
+# pool.stop() ya se ha llamado aquí
+```
+
 !!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound — salvo que pidas un executor"
     Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
     o cualquier otro `await` que ceda el control de verdad) permite a
