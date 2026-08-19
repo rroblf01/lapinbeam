@@ -8,6 +8,8 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-19
+
 ### Added
 
 - **`lapinbeam.monitors`**: one-way, non-lethal process monitoring —

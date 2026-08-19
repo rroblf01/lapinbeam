@@ -39,7 +39,7 @@ verdad entre procesos separados, no solo en pytest sobre localhost.
 > **Nota:** `lapinbeam.links`, `lapinbeam.monitors`, `lapinbeam.groups`,
 > `lapinbeam.registry` y `Supervisor.spawn_supervisor` son nuevos en el
 > paquete y todavía no están publicados en PyPI en el momento de escribir
-> esto — hace falta `lapinbeam>=1.1.0` (ver `CHANGELOG.md`). Hasta
+> esto — hace falta `lapinbeam>=1.2.0` (ver `CHANGELOG.md`). Hasta
 > entonces, `docker compose up --build` construye la imagen sin problema
 > pero el proceso fallará con `ImportError` porque la versión instalada
 > desde PyPI todavía no trae esos módulos.
