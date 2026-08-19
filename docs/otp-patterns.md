@@ -20,8 +20,12 @@ child (an actor *or* a nested Supervisor) crashes:
 - **`one_for_one`** (the default): restart only the crashed child. If it
   exhausts its restart budget, only *that* child gives up — unrelated
   siblings are never affected. This is what makes it safe to host many
-  independent, unrelated actors under one `Supervisor` over its life
-  (a worker-pool pattern).
+  independent, unrelated actors under one `Supervisor` over its life (a
+  worker-pool pattern in the loose sense of "many actors, one
+  Supervisor" — for a fixed pool of *identical* workers sharing one work
+  queue, see `Supervisor.spawn_pool()` in
+  [Getting started](getting-started.md#concurrency-one-actor-handles-one-message-at-a-time)
+  instead).
 - **`one_for_all`**: a crash restarts *every* child this `Supervisor`
   manages, not just the one that failed.
 - **`rest_for_one`**: a crash restarts the crashed child and every child

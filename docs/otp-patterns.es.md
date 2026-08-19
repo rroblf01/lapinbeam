@@ -22,8 +22,12 @@ falla cualquier hijo (un actor *o* un `Supervisor` anidado):
   Si agota su presupuesto de reintentos, solo *ese* hijo se rinde — los
   hermanos no relacionados nunca se ven afectados. Esto es lo que hace
   seguro alojar muchos actores independientes y sin relación bajo un
-  mismo `Supervisor` a lo largo de su vida (un patrón de pool de
-  workers).
+  mismo `Supervisor` a lo largo de su vida (un patrón de pool de workers
+  en el sentido amplio de "muchos actores, un Supervisor" — para un pool
+  fijo de workers *idénticos* compartiendo una única cola de trabajo, ver
+  `Supervisor.spawn_pool()` en
+  [Primeros pasos](getting-started.es.md#concurrencia-un-actor-procesa-un-mensaje-cada-vez)
+  en su lugar).
 - **`one_for_all`**: un fallo reinicia *todos* los hijos que gestiona ese
   `Supervisor`, no solo el que falló.
 - **`rest_for_one`**: un fallo reinicia el hijo que falló y todos los

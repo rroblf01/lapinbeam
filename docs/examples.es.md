@@ -121,6 +121,28 @@ cd examples/sales_warehouse
 docker compose up --build
 ```
 
+## Progreso en streaming sobre una API HTTP
+
+`examples/order_stream/` es otro montaje de tres contenedores —
+`postgres`, `app` (FastAPI) y `worker` (un nodo lapinbeam) — para un
+problema distinto: un cliente que quiere ver el progreso *en vivo* de un
+pedido, no solo el resultado final, y que puede desconectarse y volver a
+conectarse sin perder su sitio. `worker` usa `Supervisor.spawn_pool()`
+para su pool fijo de workers que procesan pedidos, y los pasos de cada
+pedido se reportan de vuelta vía
+`ActorRef.ask_stream()`/`reply_stream()`/`reply_final()` — `app`
+retransmite ese único stream a un pub/sub en memoria para que cualquier
+número de pestañas del navegador viendo el mismo
+`/orders/{id}/stream` reciba cada actualización, no solo la petición que
+por casualidad llamó a `ask_stream()`. Ver su README para el recorrido
+completo, incluida la migración desde colas/relés hechos a mano a estas
+primitivas.
+
+```bash
+cd examples/order_stream
+docker compose up --build
+```
+
 ## Descubrimiento de nodos vía nodo semilla
 
 Todos los ejemplos de arriba configuran cada nodo con la dirección exacta de

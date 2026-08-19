@@ -179,6 +179,18 @@ To spread the experts across machines (their own GPU each, say), swap
 — the coordinator's code doesn't change, since `ask()` is identical on
 `ActorRef` and `RemoteRef`.
 
+This example fans one question out to two *different* kinds of expert. If
+instead you're fanning the same question (or a batch of questions) out
+across N *interchangeable* instances of one expert — several identical
+model workers sharing a queue, whichever is free next answers —
+`Supervisor.spawn_pool()` is the more direct fit than two `spawn()` calls
+and a manual `gather()`: `pool.map(questions)` sends every question and
+collects every answer, in order, in one call. See
+[Concurrency](getting-started.md#concurrency-one-actor-handles-one-message-at-a-time)
+for the full pool API (bounded queues, per-key sharding, and
+`executor="process"` for anything CPU-bound rather than I/O-bound like
+these `await` calls to a model).
+
 ## Why not just call these over HTTP, or put them behind a broker?
 
 You can — this isn't the only valid shape. The case for lapinbeam here is
@@ -187,8 +199,8 @@ specifically: these are calls on the interactive path of an LLM session
 rather not hand-serialize, and losing an in-flight call because a worker
 process crashed mid-request is an acceptable failure mode (retry the tool
 call) rather than something that needs a durable queue. If any of that
-doesn't hold — the work must survive a crash, or you need a pool of
-interchangeable workers auto-load-balancing — see
+doesn't hold — the work must survive a crash, or the pool needs to span
+more workers than one process/machine can hold — see
 [lapinbeam vs. Celery + RabbitMQ](vs-celery-rabbitmq.md); nothing stops you
 from using both in the same system for the parts that actually need it.
 

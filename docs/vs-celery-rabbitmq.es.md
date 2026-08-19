@@ -65,9 +65,15 @@ momento del envío, el mensaje desaparece.
   [Limitaciones](index.md#limitaciones).
 - **Escalado horizontal de consumidores.** Muchos workers Celery pueden
   consumir de la misma cola, repartiendo trabajo automáticamente; añades
-  workers y sube el throughput. En lapinbeam, un nombre de actor es una
-  mailbox en un nodo — no hay reparto integrado del mismo trabajo lógico
-  entre varios procesos.
+  workers y sube el throughput, y puedes añadir más procesos/máquinas
+  worker siempre que necesites más capacidad. En lapinbeam, un nombre de
+  actor es una mailbox en un nodo; `Supervisor.spawn_pool()` da un pool
+  fijo de workers repartiéndose el trabajo de esa mailbox *dentro de un
+  solo proceso* (incluido `executor="process"` para paralelismo real de
+  CPU en los núcleos de esa máquina — ver
+  [Primeros pasos](getting-started.es.md#concurrencia-un-actor-procesa-un-mensaje-cada-vez))
+  — pero sigue sin haber forma integrada de repartir el mismo trabajo
+  lógico entre *varios* procesos o máquinas como hace la cola de Celery.
 - **Reintentos, límites de tasa, planificación, workflows.** `celery beat`
   (planificación tipo cron), `retry(countdown=..., max_retries=...)`,
   límites de tasa por tarea, chains/chords/groups para componer workflows
@@ -85,8 +91,9 @@ momento del envío, el mensaje desaparece.
 
 Recurre a **Celery + RabbitMQ** para: enviar emails, redimensionar
 imágenes, procesar subidas, cualquier cosa que lamentarías perder ante un
-fallo, o cualquier cosa que se beneficie de un pool de workers
-intercambiables.
+fallo, o un pool de workers intercambiables que necesite abarcar más
+procesos o máquinas de los que `Supervisor.spawn_pool()` (un solo
+proceso) puede dar.
 
 Recurre a **lapinbeam** para: una simulación en tiempo real o una máquina de
 estados de servidor de juego repartida entre procesos, un clúster de

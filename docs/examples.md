@@ -120,6 +120,26 @@ cd examples/sales_warehouse
 docker compose up --build
 ```
 
+## Streaming progress over an HTTP API
+
+`examples/order_stream/` is a different three-container setup —
+`postgres`, `app` (FastAPI), and `worker` (a lapinbeam node) — for a
+different problem: a client that wants *live progress* on one order, not
+just a final result, and can disconnect and reconnect without losing its
+place. `worker` runs `Supervisor.spawn_pool()` for its fixed pool of
+order-processing workers, and each order's steps are reported back via
+`ActorRef.ask_stream()`/`reply_stream()`/`reply_final()` — `app` relays
+that one stream into an in-process pub/sub so any number of browser tabs
+watching the same order's `/orders/{id}/stream` get every update, not just
+whichever request happened to call `ask_stream()`. See its README for the
+full walkthrough, including the migration from hand-rolled queues/relays
+to these primitives.
+
+```bash
+cd examples/order_stream
+docker compose up --build
+```
+
 ## Node discovery via a seed node
 
 Every example above configures each node with the exact address of every

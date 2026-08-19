@@ -58,8 +58,14 @@ redelivery — if a node is unreachable when you send, the message is gone.
   lost — see [Limitations](index.md#limitations).
 - **Horizontal scaling of consumers.** Many Celery workers can consume from
   the same queue, load-balancing work automatically; add workers, throughput
-  goes up. In lapinbeam, an actor name is one mailbox on one node — there is
-  no built-in fan-out of the same logical work across multiple processes.
+  goes up, and you can add more worker *processes/machines* whenever you
+  need more capacity. In lapinbeam, an actor name is one mailbox on one
+  node; `Supervisor.spawn_pool()` gives you a fixed pool of workers
+  sharing that mailbox's work *within one process* (including
+  `executor="process"` for real CPU parallelism on that one machine's
+  cores — see [Getting started](getting-started.md#concurrency-one-actor-handles-one-message-at-a-time))
+  — but there's still no built-in way to fan the same logical work out
+  across *multiple* processes or machines the way Celery's queue does.
 - **Retries, rate limits, scheduling, workflows.** `celery beat` (cron-like
   scheduling), `retry(countdown=..., max_retries=...)`, rate limiting per
   task, chains/chords/groups for composing multi-step workflows — none of
@@ -74,8 +80,9 @@ redelivery — if a node is unreachable when you send, the message is gone.
 ## Practical guidance
 
 Reach for **Celery + RabbitMQ** for: sending emails, resizing images,
-processing uploads, anything you'd be unhappy to lose on a crash, or
-anything that benefits from a pool of interchangeable workers.
+processing uploads, anything you'd be unhappy to lose on a crash, or a
+pool of interchangeable workers that needs to span more processes or
+machines than `Supervisor.spawn_pool()` (one process) can give you.
 
 Reach for **lapinbeam** for: a real-time simulation or game server state
 machine spread across processes, a cluster of stateful services that need to

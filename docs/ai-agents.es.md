@@ -186,6 +186,18 @@ digamos), cambia `research_ref`/`code_ref` por
 coordinador no cambia, ya que `ask()` es idéntico en `ActorRef` y en
 `RemoteRef`.
 
+Este ejemplo reparte una pregunta entre dos tipos de experto *distintos*.
+Si en cambio repartes la misma pregunta (o un lote de preguntas) entre N
+instancias *intercambiables* de un mismo experto — varios workers de
+modelo idénticos compartiendo una cola, responde el que esté libre —
+`Supervisor.spawn_pool()` encaja mejor que dos llamadas a `spawn()` más un
+`gather()` a mano: `pool.map(preguntas)` envía cada pregunta y recoge cada
+respuesta, en orden, en una sola llamada. Ver
+[Concurrencia](getting-started.es.md#concurrencia-un-actor-procesa-un-mensaje-cada-vez)
+para la API completa del pool (colas acotadas, particionado por clave, y
+`executor="process"` para lo que sea CPU-bound en vez de I/O-bound como
+estas llamadas `await` a un modelo).
+
 ## ¿Por qué no llamarlos por HTTP, o ponerlos detrás de un broker?
 
 Puedes hacerlo — esta no es la única forma válida. El argumento a favor de
@@ -195,8 +207,8 @@ Python tipados que prefieres no serializar a mano, y perder una llamada en
 vuelo porque un proceso worker murió a mitad de la petición es un modo de
 fallo aceptable (reintentar la tool call) en vez de algo que necesite una
 cola duradera. Si algo de eso no se cumple — el trabajo debe sobrevivir a
-un fallo, o necesitas un pool de workers intercambiables que se
-autobalanceen — mira
+un fallo, o el pool necesita más workers de los que un solo
+proceso/máquina puede sostener — mira
 [lapinbeam frente a Celery + RabbitMQ](vs-celery-rabbitmq.es.md); nada
 impide usar ambos en el mismo sistema para las partes que de verdad lo
 necesiten.

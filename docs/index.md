@@ -58,6 +58,12 @@ want both in the same system.
   registration (`lapinbeam.links`/`monitors`/`groups`/`registry`) — all
   local- and cross-node, with no wire protocol changes — see
   [OTP-inspired patterns](otp-patterns.md).
+- Fixed worker pools (`Supervisor.spawn_pool()`) — function or `@actor`
+  class handlers, bounded queues, per-key sharding for ordering, and
+  thread/process executors for CPU-bound work — plus streaming replies
+  (`ask_stream()`/`reply_stream()`/`reply_final()`) for a handler that
+  reports progress instead of one final answer — see
+  [Getting started](getting-started.md#concurrency-one-actor-handles-one-message-at-a-time).
 
 ## Security
 

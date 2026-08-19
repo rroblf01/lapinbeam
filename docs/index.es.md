@@ -61,6 +61,13 @@ quieras los dos en el mismo sistema.
   (`lapinbeam.links`/`monitors`/`groups`/`registry`) — todo local y entre
   nodos, sin cambios en el protocolo de red — ver
   [Patrones inspirados en OTP](otp-patterns.es.md).
+- Pools fijos de workers (`Supervisor.spawn_pool()`) — handlers como
+  función o como clase `@actor`, colas acotadas, particionado por clave
+  para mantener orden, y executors de hilos/procesos para trabajo
+  CPU-bound — más respuestas en streaming
+  (`ask_stream()`/`reply_stream()`/`reply_final()`) para un handler que
+  reporta progreso en vez de una única respuesta final — ver
+  [Primeros pasos](getting-started.es.md#concurrencia-un-actor-procesa-un-mensaje-cada-vez).
 
 ## Seguridad
 

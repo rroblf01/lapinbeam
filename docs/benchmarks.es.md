@@ -11,6 +11,7 @@ uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # percentiles de RTT
 uv run python bench/bench_codec.py    # ruta de codec + conversión JSON, capa a capa
 uv run python bench/bench_memory.py   # RSS bajo carga sostenida, churn de conexiones y backpressure de mailbox
+uv run python bench/bench_pool.py     # spawn_pool(): speedup de CPU con executor=, acotado de queue_capacity, limpieza de stop()
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -103,6 +104,37 @@ sentido compararlos entre ejecuciones o hardware — lo que importa es la
 *forma* de la curva de cada escenario (plana frente a creciente), por eso
 este script imprime una serie de muestras en vez de un único par
 antes/después.
+
+## Pool (`bench_pool.py`)
+
+Centrado específicamente en `Supervisor.spawn_pool()`, responde a tres
+preguntas que las comprobaciones generales de memoria de arriba no cubren:
+
+1. **¿`executor="process"` da de verdad paralelismo real de CPU** para
+   trabajo CPU-bound, frente a un pool async normal o `executor="thread"`
+   (ambos igual de limitados por el GIL)? En la máquina de 12 núcleos del
+   mantenedor, con 4 workers: ~1x para el pool async normal y
+   `executor="thread"`, ~3.4x para `executor="process"` — speedup real,
+   aunque no perfectamente lineal, solo cuando de verdad corre en
+   procesos separados. Ver el aviso "Este paralelismo es para trabajo
+   I/O-bound, no CPU-bound" en
+   [Primeros pasos](getting-started.es.md#concurrencia-un-actor-procesa-un-mensaje-cada-vez).
+2. **¿`queue_capacity` de verdad acota la memoria** bajo sobrecarga
+   sostenida? Sin ella, el RSS crece tan rápido como se envían mensajes
+   (cientos de MiB en pocos segundos); con ella, el crecimiento se queda
+   plano y el exceso se descarta y se cuenta vía
+   `on_event(kind="pool_queue_full")` en vez de acumularse.
+3. **¿`pool.stop()` de verdad libera todo** — mailboxes, tareas,
+   contabilidad del `Supervisor` y (para pools con `executor=`) hilos o
+   procesos del sistema operativo — a lo largo de muchos ciclos de
+   crear/destruir? El RSS debería estabilizarse tras los primeros ciclos,
+   la misma comprobación de "¿se estabiliza?" que el escenario de churn
+   de conexiones del script de Memoria.
+
+También muestrea el CPU% de este proceso con grano fino (~0.15s, leyendo
+`/proc/self/stat` directamente) durante una ejecución de pool particionado
+(`key=`), para detectar el tipo de pico breve que solo se ve con ese
+grano fino.
 
 ## Cómo leer estas cifras correctamente
 

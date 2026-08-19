@@ -42,6 +42,11 @@ version bump. This hasn't been run at production scale yet — see
   and cluster-wide unique name registration (`register_name`/
   `unregister_name`/`whereis_name`), local and cross-node, with no wire
   protocol changes for either.
+- `Supervisor.spawn_pool()`: a fixed worker pool (function or `@actor`
+  class handlers) with `queue_capacity` backpressure, `key=` sharding for
+  per-key ordering, and `executor="thread"|"process"` for CPU-bound work.
+  `ActorRef.ask_stream()`/`MessageMeta.reply_stream()`/`reply_final()` for
+  streaming replies instead of one final answer.
 
 ## Install
 

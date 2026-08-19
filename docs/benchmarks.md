@@ -11,6 +11,7 @@ uv run python bench/bench_remote.py   # throughput
 uv run python bench/bench_latency.py  # RTT percentiles
 uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
 uv run python bench/bench_memory.py   # RSS under sustained load, connection churn, and mailbox backpressure
+uv run python bench/bench_pool.py     # spawn_pool(): executor= CPU speedup, queue_capacity bounding, stop() cleanup
 ```
 
 ## Throughput (`bench_remote.py`)
@@ -96,6 +97,34 @@ Absolute RSS values depend heavily on the machine and are not meaningful to
 compare across runs or hardware — what matters is the *shape* of each
 scenario's curve (flat vs. climbing), which is why this script prints a
 running series of samples rather than a single before/after pair.
+
+## Pool (`bench_pool.py`)
+
+Scoped to `Supervisor.spawn_pool()` specifically, answering three
+questions the general memory checks above don't:
+
+1. **Does `executor="process"` actually buy real CPU parallelism** for
+   CPU-bound work, compared to a plain async pool or `executor="thread"`
+   (both still serialized by the GIL)? On the maintainer's 12-core
+   machine, 4 workers: ~1x for the plain async pool and `executor="thread"`,
+   ~3.4x for `executor="process"` — real, if not perfectly linear,
+   speedup only when it's actually running in separate processes. See
+   the "This parallelism is for I/O-bound work, not CPU-bound work"
+   warning in [Getting started](getting-started.md#concurrency-one-actor-handles-one-message-at-a-time).
+2. **Does `queue_capacity` actually keep memory bounded** under sustained
+   overload? Without it, RSS grows as fast as messages are sent
+   (hundreds of MiB over a few seconds); with it, growth stays flat and
+   the excess is dropped and counted via `on_event(kind="pool_queue_full")`
+   instead.
+3. **Does `pool.stop()` actually release everything** — mailboxes, tasks,
+   `Supervisor` bookkeeping, and (for `executor=` pools) OS
+   threads/processes — across many create/destroy cycles? RSS should
+   plateau after the first few cycles, the same "does it plateau" check
+   as the Memory script's connection-churn scenario.
+
+Also samples this process's CPU% at fine granularity (~0.15s, reading
+`/proc/self/stat` directly) during a sharded (`key=`) pool run, to catch
+the kind of short-lived spike that only shows up at fine granularity.
 
 ## Reading these numbers correctly
 
