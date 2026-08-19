@@ -20,47 +20,57 @@ si algún día hiciera falta, y un pico de tráfico HTTP en `app` no le quita
 CPU al trabajo que `worker` tiene entre manos.
 
 ```
-┌─────────────── app (FastAPI) ───────────────┐   ┌────────── worker ──────────┐
-│                                              │   │                            │
-│  POST /orders                                │   │  sup.spawn(Dispatcher)     │
-│    crea fila en Postgres (en_progreso)       │   │  sup.spawn(Worker_0..N)    │
-│    dispatcher.send({id, reply_node=app_id}) ─┼──▶│    cada uno: while True:   │
-│                                              │   │      id = await queue.get()│
-│  GET /orders/{id}/stream                     │   │      for step in STEPS:    │
-│    lee Postgres (catch-up)                   │   │        sleep(1-3s)  # IA   │
-│    se suscribe a pubsub.py (memoria)         │   │        guarda en Postgres  │
-│    reenvía cada evento tal cual llega ───────┤◀──┼────────ticks.send({...})   │
-│                                              │   │        (push, no polling)  │
-│  ticks (actor local): recibe el push         │   │                            │
-│    y hace pubsub.publish()                   │   │                            │
-└──────────────────────────────────────────────┘   └────────────────────────────┘
+┌─────────────── app (FastAPI) ───────────────┐   ┌────────── worker ───────────┐
+│                                              │   │                             │
+│  POST /orders                                │   │  sup.spawn_pool(            │
+│    crea fila en Postgres (en_progreso)       │   │    process_order,           │
+│    asyncio.create_task(_relay(id)) ──┐       │   │    MAX_PARALLEL,            │
+│                                       │       │   │    name="order_pool")      │
+│  _relay(id):                         │       │   │                             │
+│    async for update in               │       │   │  process_order(msg):        │
+│      pool.ask_stream({id}) ──────────┼──────▶│   │    for step in STEPS:       │
+│        pubsub.publish(id, update)    │       │   │      sleep(1-3s)  # IA      │
+│                                       │       │   │      guarda en Postgres     │
+│  GET /orders/{id}/stream             │       │   │      reply_stream(estado) ──┼──▶ (de vuelta
+│    lee Postgres (catch-up)           │       │   │    reply_final(estado)      │     al mismo
+│    se suscribe a pubsub.py (memoria)◀┘       │   │                             │     ask_stream)
+│    reenvía cada evento tal cual llega        │   │                             │
+└──────────────────────────────────────────────┘   └─────────────────────────────┘
                     │                                            │
                     └──────────────── Postgres ──────────────────┘
                           (única fuente de verdad durable)
 ```
 
-- **`dispatcher`** es el único actor de `worker` que `app` necesita
-  conocer por nombre — el mismo truco de actor reservado y bien conocido
-  que usan `lapinbeam.discovery`/`links`/`groups`/`registry` para sus
-  propios actores de control. Solo mete el id en la cola compartida; el
-  pool de `MAX_PARALLEL` workers (creado una vez al arrancar, no uno por
-  pedido — ver la sección de abajo) es quien de verdad hace el trabajo.
-- El progreso se **empuja** de vuelta a `app`, no se sondea: `worker`
-  reutiliza la misma conexión que `app` abrió para alcanzar `dispatcher`
-  (las conexiones lapinbeam sirven en ambos sentidos una vez
-  establecidas) para enviar cada actualización directamente al actor
-  `ticks` de `app`, que solo hace `pubsub.publish()`. El SSE nunca vuelve
-  a leer Postgres tras el arranque de la conexión — cada tick ya trae el
-  estado completo.
+- **`sup.spawn_pool()`** (`lapinbeam` ≥ 1.3.0) reemplaza lo que antes
+  había que montar a mano: un actor "dispatcher" reservado, una cola
+  compartida, y `N` actores-worker creados con una factoría por índice.
+  `process_order()` es ahora una función normal — nada de eso hace falta
+  ya, ver la sección de abajo para la comparación completa.
+- **`ask_stream()`/`reply_stream()`/`reply_final()`** reemplazan el trío
+  `dispatcher`/`ticks`/`pubsub.py` que reenviaba el progreso a mano: el
+  worker llama a `current_message().reply_stream()` en cada paso y a
+  `reply_final()` al terminar, y `_relay()` en `app` los recibe
+  directamente con `pool.ask_stream(...)` — sin actor relé, sin envoltorio
+  manual.
+- **`_relay()` corre una sola vez por pedido, no una vez por pestaña.**
+  `ask_stream()` solo le entrega a quien preguntó — así que si abrieras
+  una pestaña nueva por cada `ask_stream()`, la segunda pestaña que
+  mirase el mismo pedido no vería nada. En vez de eso, `_relay()` reenvía
+  cada actualización al `pubsub.py` local, y **cualquier** número de
+  conexiones SSE que se suscriban a ese `order_id` ven lo mismo en
+  tiempo real — verificado abriendo dos streams a la vez sobre el mismo
+  pedido: ambas reciben idénticos eventos, al mismo tiempo.
 - **Postgres sigue siendo la única fuente de verdad durable.** Si un
   push se pierde (`app` reiniciando justo en ese instante, por ejemplo),
   es una actualización en vivo perdida, nunca un dato perdido — quien
   reconecte después ve el estado real leyendo Postgres directamente.
 
-> **Nota:** este ejemplo solo usa `Node`/`Supervisor`/`actor`, ya
-> disponibles desde `lapinbeam>=1.0.2` en PyPI — a diferencia de
-> `examples/cluster_supervision/`, no necesita ninguna versión sin
-> publicar.
+> **Nota:** `Supervisor.spawn_pool()` y `ask_stream()`/`reply_stream()`/
+> `reply_final()` son nuevos en el paquete y todavía no están publicados
+> en PyPI en el momento de escribir esto — hace falta `lapinbeam>=1.3.0`
+> (ver `CHANGELOG.md`). Hasta entonces, `docker compose up --build`
+> construye la imagen sin problema pero el proceso fallará porque la
+> versión instalada desde PyPI todavía no trae esas funciones.
 
 ## Ejecutarlo
 
@@ -98,8 +108,8 @@ eso — la comparación completa, con números reales, está más abajo.
 
 Repetí las mismas corridas con los tres diseños (actor-por-pedido en un
 proceso único; pool fijo en un proceso único; pool fijo repartido en
-`app`+`worker` separados, el estado actual), contra los mismos
-contenedores, Postgres limpio antes de cada una:
+`app`+`worker` separados), contra los mismos contenedores, Postgres
+limpio antes de cada una:
 
 | Escenario | v1: actor por pedido (1 proceso) | v2: pool fijo (1 proceso) | v3: pool fijo, `app`+`worker` separados |
 | --- | --- | --- | --- |
@@ -145,6 +155,34 @@ actores pueda evitar.
   test (1000 pedidos naciendo y terminando casi a la vez), no una meseta
   sostenida — con tráfico real, repartido en el tiempo, esto se aplanaría.
 
+### v4: los mismos `app`/`worker` separados, con `spawn_pool()`/`ask_stream()` en vez de código a mano
+
+La v3 de la tabla de arriba (`app`+`worker` separados) usaba un
+`dispatcher` reservado, una cola y una factoría de clases-worker escritos
+a mano en `worker/`, y un actor `ticks` + `pubsub.py` en `app/` para
+reenviar el progreso. La versión actual del código sustituye todo eso por
+`sup.spawn_pool(process_order, MAX_PARALLEL, name="order_pool")` en el
+worker y `pool.ask_stream(...)` + un único `_relay()` en la API — mismo
+comportamiento, con `worker/order.py` reducido a una sola función y sin
+`ticks.py` en absoluto.
+
+El rendimiento no debería cambiar (es exactamente el mismo patrón, con
+menos código alrededor) — lo confirmé con una corrida de 100 pedidos tras
+el cambio: 100/100 completados en 10.75s, en línea con los números de v3
+de la tabla de arriba, no una regresión. No repetí la batería completa de
+1000 con y sin límite, ya que ambas primitivas nuevas están cubiertas
+además por tests dedicados (`tests-python/test_pool.py`,
+`test_ask_stream.py`).
+
+Lo que sí verifiqué específicamente, porque es justo el problema que
+`ask_stream()` por sí solo no resuelve (ver
+[Streaming replies con ask_stream()](../../docs/getting-started.es.md#respuestas-en-streaming-con-ask_stream)):
+abrir **dos** conexiones `GET /orders/{id}/stream` a la vez sobre el
+mismo pedido — ambas reciben exactamente los mismos eventos, al mismo
+tiempo, porque `_relay()` llama a `ask_stream()` una sola vez por pedido
+(no una vez por conexión) y reenvía al `pubsub.py` local, que sí sabe
+repartir a cuantos haya suscritos.
+
 ## Lo que este ejemplo no resuelve (y por qué es aceptable aquí)
 
 - **Un único `worker`.** Si se cae, ningún pedido nuevo se procesa hasta
@@ -160,3 +198,13 @@ actores pueda evitar.
   son iguales para el pool — no hay forma de decir "este es más urgente,
   procésalo antes que los que ya están en cola". Para eso haría falta una
   cola con prioridad en vez de un `asyncio.Queue` simple.
+- **`_relay()` usa `timeout=None`** (espera indefinidamente entre
+  actualizaciones) — si `worker` se cae a mitad de un pedido sin llegar a
+  responder `reply_final()`, ese `_relay()` se queda esperando para
+  siempre en vez de fallar con un `TimeoutError` observable. Postgres ya
+  tiene lo que se guardó hasta ese punto (nunca se pierde el dato), pero
+  la tarea de relay en sí queda colgada hasta que `app` se reinicie. Un
+  `timeout` finito razonable (o combinar esto con `lapinbeam.monitors`
+  sobre el pool, ver [Patrones inspirados en OTP](../../docs/otp-patterns.md))
+  lo resolvería, a costa de tener que decidir qué "razonable" significa
+  para pedidos que de verdad pueden tardar minutos.

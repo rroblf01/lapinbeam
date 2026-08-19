@@ -2,4 +2,4 @@ import lapinbeam
 
 
 def test_version():
-    assert lapinbeam.__version__ == "1.2.0"
+    assert lapinbeam.__version__ == "1.3.0"

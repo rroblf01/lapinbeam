@@ -6,11 +6,11 @@ import asyncio
 import inspect
 import time
 
-from .actor import actor_name
+from .actor import actor, actor_name
 from .context import current as current_message_var
 from .context import current_actor as current_actor_var
 from .node import get_current_node
-from .refs import ActorRef, SupervisorRef
+from .refs import ActorRef, PoolRef, SupervisorRef
 
 _STRATEGIES = frozenset({"one_for_one", "one_for_all", "rest_for_one"})
 
@@ -118,6 +118,87 @@ class Supervisor:
         child.task = loop.create_task(self._run_actor_child(child))
         node._register_task(child.task)
         return ActorRef(node, name, child=child)
+
+    async def spawn_pool(self, handler, n_workers, *args, name, **kwargs):
+        """Spawns a *fixed* pool of `n_workers` actors sharing one queue —
+        the pattern `examples/order_stream/` used to build by hand before
+        this existed: a reserved "dispatcher" actor (named `name`, the one
+        a remote node addresses via `get_remote_actor(peer, name)`) that
+        just drops incoming messages on a shared `asyncio.Queue`, and
+        `n_workers` persistent actors pulling from it — whichever is free
+        next picks up the next message, not round-robin. Returns a
+        `PoolRef`. Async, unlike `spawn()`: each worker needs one real
+        message to start its loop, and that has to be awaited.
+
+        `handler(msg, *args, **kwargs)` runs once per message `pool.send()`
+        (or a remote `get_remote_actor(peer, pool.name).send()`) delivers —
+        `args`/`kwargs` are the same for every worker and every message
+        (e.g. a shared `node` reference), not per-worker state. Inside
+        `handler`, `current_message()`/`current_message().reply()` and
+        `ask()`/`ask_stream()` sent to the pool all work exactly as they
+        would in an ordinary `spawn()`ed actor — the dispatcher captures
+        each message's metadata (`reply_to`, `correlation_id`, ...) and the
+        worker re-binds it for the duration of that one `handler()` call,
+        even though many calls share the worker's single `receive()`
+        invocation.
+
+        A `handler` that raises is caught here, not left to crash the
+        worker: nothing ever sends a pool worker a second message on its
+        own mailbox, so a crashed worker would never restart on its own
+        the way an ordinary `spawn()`ed actor does — the exception is
+        reported via `on_event(kind="pool_worker_error")` instead, and the
+        worker moves on to the next queued message.
+
+        Use this instead of `n_workers` separate `spawn()` calls when work
+        items arrive faster than one actor could get through them, but the
+        actual per-item work is cheap enough (or I/O-bound enough) that a
+        handful of workers can keep up — see
+        [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
+        for why a single actor never parallelizes itself. `name` is
+        required (not derived from `handler` automatically) so two pools
+        never collide by accident — actor names must be unique per node.
+        """
+        node = self.node
+        queue = asyncio.Queue()
+
+        @actor(name=name)
+        class _Dispatcher:
+            async def receive(self, msg):
+                # Captured *inside* the dispatcher's own receive() — this
+                # is the one point where `current_message_var` correctly
+                # describes `msg`, since `_drive` binds it fresh per
+                # dispatch. Carried alongside `msg` so a worker can restore
+                # it later, potentially long after the dispatcher has
+                # moved on to other messages.
+                queue.put_nowait((msg, current_message_var.get()))
+
+        def _build_worker(index):
+            @actor(name=f"__{name}_worker_{index}__")
+            class _Worker:
+                async def receive(self, _msg):
+                    while True:
+                        item, meta = await queue.get()
+                        token = current_message_var.set(meta)
+                        try:
+                            await handler(item, *args, **kwargs)
+                        except Exception as exc:
+                            node._on_core_event({
+                                "kind": "pool_worker_error",
+                                "pool": name,
+                                "detail": f"{type(exc).__name__}: {exc}",
+                            })
+                        finally:
+                            current_message_var.reset(token)
+
+            return _Worker
+
+        dispatcher_ref = self.spawn(_Dispatcher)
+        worker_refs = []
+        for i in range(n_workers):
+            ref = self.spawn(_build_worker(i))
+            await ref.send({"start": True})
+            worker_refs.append(ref)
+        return PoolRef(dispatcher_ref, worker_refs)
 
     def spawn_supervisor(self, name, build, *, strategy="one_for_one",
                           max_restarts=3, restart_window=5.0):

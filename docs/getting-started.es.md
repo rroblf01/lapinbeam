@@ -111,48 +111,52 @@ locks — la misma garantía que dan los procesos de Erlang.
 
 Si quieres que varias de esas llamadas corran de verdad a la vez, crea un
 **pool** de actores en vez de esperar que un solo actor se paralelice a
-sí mismo:
+sí mismo. `Supervisor.spawn_pool()` hace justo eso — `n_workers` actores
+creados una vez, compartiendo una cola interna, y el que esté libre coge
+el siguiente mensaje:
 
 ```python
-import itertools
-
-N_WORKERS = 5
+from lapinbeam import PoolRef
 
 
-def build_processor(index):
-    # @actor necesita un nombre único por actor, así que un pool son N
-    # clases distintas (una por índice), no N instancias de una misma
-    # clase decorada.
-    @actor(name=f"processor_{index}")
-    class Processor:
-        async def receive(self, msg):
-            await asyncio.sleep(1)
-            print(f"processor_{index} terminado con", msg["id"])
-
-    return Processor
+async def process(msg):
+    await asyncio.sleep(1)
+    print("terminado con", msg["id"])
 
 
 async def main():
     async with Node("app@127.0.0.1:0") as node:
-        sup = Supervisor(node=node)  # one_for_one: un worker que revienta no afecta a sus hermanos
-        pool = [sup.spawn(build_processor(i)) for i in range(N_WORKERS)]
-        round_robin = itertools.cycle(pool)
-
+        sup = Supervisor(node=node)
+        pool: PoolRef = await sup.spawn_pool(process, 5, name="processors")
         for i in range(5):
-            ref = next(round_robin)
-            await ref.send({"id": i})
+            await pool.send({"id": i})
         await asyncio.sleep(2)  # ahora ~1s en total, no ~5s
 ```
 
 Cada actor del pool tiene su propio mailbox y su propia tarea, así que sus
 cinco `asyncio.sleep(1)` se solapan de verdad — los cinco terminan sobre
-el segundo 1 en vez del segundo 5. Elige cómo repartir el trabajo entre
-el pool según lo que necesites: round-robin (como arriba) para un
-reparto uniforme, `hash(clave) % N_WORKERS` para "el mismo tipo de
-mensaje siempre cae en el mismo worker", o `ask()` + `asyncio.gather()`
-sobre varios miembros del pool si necesitas esperar más de una respuesta
-a la vez (ver el patrón de mixture-of-experts en
-[Agentes de IA y MCP](ai-agents.es.md)).
+el segundo 1 en vez del segundo 5. `current_message()`/`.reply()` y
+`ask()`/`ask_stream()` enviados a `pool` funcionan exactamente igual que
+contra un actor `spawn()`eado normal, sin importar qué worker acabe
+respondiendo. Un `process` que lanza una excepción no tira abajo a su
+worker — se captura internamente y se reporta vía
+`on_event(kind="pool_worker_error")`, y ese worker sigue con el siguiente
+mensaje de la cola.
+
+**Cuándo usar `spawn_pool()`**: llegan más elementos de trabajo de los
+que un solo actor podría procesar, pero cada uno es lo bastante barato (o
+I/O-bound — ver el aviso de abajo) como para que unos pocos workers den
+abasto, y no te importa *cuál* de ellos procese cada elemento. **Cuándo
+no**: si los workers necesitan estado propio entre mensajes (los workers
+de `spawn_pool()` no guardan estado entre llamadas — todo lo que un
+`process()` necesita llega por `msg`/los `*args`/`**kwargs` compartidos,
+no por `self`), o si importa que "el mismo tipo de mensaje siempre caiga
+en el mismo worker" (p.ej. orden por clave) — para eso, vuelve a N
+`sup.spawn()` sueltos y reparte tú mismo con `hash(clave) % n_workers`. Y
+si necesitas esperar *varias* respuestas independientes a la vez en vez
+de que un pool responda a un único `ask()`, la herramienta es
+`asyncio.gather()` sobre varios `ask()` (con pool o sin él) — ver el
+patrón de mixture-of-experts en [Agentes de IA y MCP](ai-agents.es.md).
 
 !!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound"
     Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
@@ -360,6 +364,55 @@ después — no queda ningún actor ni recurso adicional persistente. Ver
 [Agentes de IA y MCP](ai-agents.es.md) para un ejemplo trabajado: despachar
 tool calls de MCP a un nodo worker, y repartir una pregunta entre varios
 actores expertos concurrentemente.
+
+## Respuestas en streaming con `ask_stream()`
+
+`ask()` es para un handler que calcula una única respuesta. Cuando el
+handler necesita reportar *progreso* por el camino — un trabajo largo con
+varios pasos, cada uno interesante de mostrar antes del resultado final —
+`ask_stream()` es la misma idea, repetida: el handler llama a
+`current_message().reply_stream()` tantas veces como quiera, y luego a
+`reply_final()` exactamente una vez, y quien pregunta los va leyendo a
+medida que llegan:
+
+```python
+@actor(name="importer")
+class Importer:
+    async def receive(self, msg):
+        for row in msg["rows"]:
+            await do_slow_import(row)
+            await current_message().reply_stream({"imported": row["id"]})
+        await current_message().reply_final({"status": "done"})
+
+
+async def watch_import(ref, rows):
+    async for update in ref.ask_stream({"rows": rows}, timeout=None):
+        print(update)  # {"imported": ...} unas cuantas veces, luego {"status": "done"}
+```
+
+`timeout` (5s por defecto, igual que `ask()`) aplica *por elemento* aquí,
+no al stream entero — el reloj se reinicia tras cada `reply_stream()`/
+`reply_final()`, así que un handler que sigue trabajando activamente
+nunca expira solo porque el trabajo completo tarde mucho; solo expira si
+se queda callado durante `timeout` segundos. Funciona igual en
+`ActorRef`, `RemoteRef`, y en un `PoolRef` de
+`Supervisor.spawn_pool()` — el worker que acabe procesando el mensaje es
+el que verás respondiendo.
+
+**Cuándo usarlo**: siempre que quien pregunta de verdad quiera observar
+el progreso, no solo esperar una respuesta única — alimentar una barra de
+progreso, un log, o (el caso común) una respuesta Server-Sent Events en
+un handler web. **Cuándo no**: si solo te importa el resultado final,
+`ask()` a secas es más simple y no exige que el handler se acuerde de
+llamar a `reply_final()`. Y `ask_stream()` solo le llega a quien lo
+llamó — si *varios* observadores independientes necesitan las mismas
+actualizaciones en vivo (p.ej. más de una pestaña abierta sobre el mismo
+trabajo en marcha), repartirlo entre ellos es cosa tuya, no de
+`ask_stream()`: que una sola tarea llame a `ask_stream()` y reenvíe cada
+actualización a un pub/sub local pequeño al que se suscriban los demás
+observadores, en vez de que cada uno llame a `ask_stream()` por su
+cuenta. `examples/order_stream/` es exactamente esto: una tarea de relay
+por pedido, alimentando cuantas conexiones SSE lo estén observando.
 
 Ejecútalos como dos procesos separados (ver [Ejemplos](examples.md) para
 correr esto entre contenedores u hosts reales en vez de `127.0.0.1`):

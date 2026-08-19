@@ -232,6 +232,11 @@ class Node:
           `event["name"]` (`event["existing"]` kept, `event["incoming"]`
           rejected) — see `lapinbeam.registry`'s module docstring for why
           this can happen and what it doesn't guarantee.
+        - `"pool_worker_error"` — a `Supervisor.spawn_pool()` worker's
+          `handler` raised while processing a queued message.
+          `event["pool"]` is the pool's name, `event["detail"]` describes
+          the exception. The worker itself doesn't crash — it moves on to
+          the next queued message — so this is purely observational.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.

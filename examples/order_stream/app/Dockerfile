@@ -6,7 +6,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
-COPY main.py db.py pubsub.py ticks.py ./
+COPY main.py db.py pubsub.py ./
 COPY static ./static
 
 EXPOSE 8000

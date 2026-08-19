@@ -7,7 +7,7 @@ from .groups import join_group, leave_group, members, register_groups
 from .links import Exit, link, register_links, trap_exit, unlink
 from .monitors import Down, demonitor, monitor, register_monitors
 from .node import Node
-from .refs import ActorRef, RemoteRef, SupervisorRef
+from .refs import ActorRef, PoolRef, RemoteRef, SupervisorRef
 from .registry import register_registry, register_name, unregister_name, whereis_name
 from .supervisor import Supervisor
 
@@ -20,6 +20,7 @@ __all__ = [
     "ActorRef",
     "RemoteRef",
     "SupervisorRef",
+    "PoolRef",
     "encode_payload",
     "decode_payload",
     "register_codec",

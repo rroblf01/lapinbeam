@@ -8,6 +8,48 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-19
+
+### Added
+
+- **`Supervisor.spawn_pool(handler, n_workers, *args, name, **kwargs)`**:
+  a fixed pool of `n_workers` actors sharing one internal queue, created
+  once — not one actor per unit of work. Packages a pattern that used to
+  be hand-built (a reserved "dispatcher" actor plus `n_workers` persistent
+  actors each looping `while True: item = await queue.get()`): whichever
+  worker is free next picks up the next `pool.send()`/remote
+  `get_remote_actor(peer, pool.name).send()`, not round-robin. `handler`
+  runs with `current_message()` correctly bound for each item — `.reply()`,
+  `ask()`, and `ask_stream()` sent to the pool all work exactly as they
+  would against an ordinary `spawn()`ed actor. A `handler` that raises is
+  caught internally and reported via `on_event(kind="pool_worker_error")`
+  instead of crashing the worker — nothing ever sends a pool worker a
+  second message on its own mailbox, so a crashed worker would never
+  restart itself the way a normal actor does. See
+  [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
+  for when a pool is (and isn't) the right tool.
+- **`ActorRef.ask_stream()` / `RemoteRef.ask_stream()`**, plus
+  `MessageMeta.reply_stream()`/`reply_final()`: a streaming counterpart to
+  `ask()`, for a handler that needs to report *progress*, not just a
+  single final answer. `async for update in ref.ask_stream(msg):` yields
+  one item per `reply_stream()` call the handler makes, then the item sent
+  via `reply_final()`, then stops. No wire protocol changes — a streamed
+  reply is an ordinary message wrapped in a small internal envelope,
+  exactly like every other cross-node feature added this cycle. `timeout`
+  applies per item (the clock resets after every yield), not to the whole
+  stream, so a handler that's still actively reporting progress never
+  times out just because the total stream runs long. `ask_stream()` only
+  ever delivers to whoever called it — fanning a single stream out to
+  several independent watchers (e.g. more than one browser tab open on
+  the same in-flight job) is the caller's job, typically one relay task
+  forwarding into a small local pub/sub; see
+  `examples/order_stream/`'s README for a worked version of exactly that.
+- `examples/order_stream/` rebuilt on both of the above: the worker node
+  is now a single `process_order()` function passed to `spawn_pool()`
+  (no more hand-rolled dispatcher/queue/worker-factory), and progress
+  reaches the API node via `ask_stream()` instead of a hand-built
+  "ticks" relay actor + module-level pub/sub glue.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added

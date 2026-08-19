@@ -1,29 +1,24 @@
-"""A *fixed* pool of `MAX_PARALLEL` lapinbeam actors, created once at
-startup — not one actor per order. Each worker loops forever, pulling the
-next order id off a shared queue and running its steps, then going back
-for the next one.
+"""Order processing, as a `Supervisor.spawn_pool()` — a fixed pool of
+`MAX_PARALLEL` actors (see main.py), each running `process_order()` for
+whichever order is next in the pool's internal queue.
 
-This replaced an earlier one-actor-per-order design: spawning (and later
-retiring) a brand new actor for every order meant real, synchronous CPU
-cost — a fresh Python class, registering a mailbox with the Rust core,
-etc. — paid once per order even though only `MAX_PARALLEL` of them could
-ever be doing real work at once. A fixed pool pays that cost exactly
-`MAX_PARALLEL` times, period, no matter how many orders are ever
-submitted — see the README's benchmark section for the measured
-before/after.
+This used to be built by hand: a reserved "dispatcher" actor, a
+hand-rolled `asyncio.Queue`, a `build_worker(index)` factory spawning one
+class per worker, and each worker's own `while True: await queue.get()`
+loop. `spawn_pool()` (see `lapinbeam/supervisor.py`) packages exactly that
+pattern — see `docs/getting-started.md`'s "Concurrency" section for why a
+pool, not one actor, is what makes N orders actually run in parallel.
 
-A crash inside one order's steps is caught *inside* the loop, not allowed
-to escape `receive()`: since nothing ever sends this actor another
-message after its one startup "go", if `receive()` itself crashed the
-worker would never restart — the crashed message would be gone. Catching
-here means the worker just picks up the next order in the queue, same as
-a `one_for_one` restart would, without needing one.
+Progress is reported with `current_message().reply_stream()`/
+`reply_final()` instead of a hand-built "ticks" relay actor — whoever
+called `ask_stream()` on this pool (see app/main.py) gets every update
+directly, in order, ending with the one sent via `reply_final()`.
 """
 
 import asyncio
 import random
 
-from lapinbeam import actor
+from lapinbeam import current_message
 
 import db
 
@@ -34,70 +29,24 @@ STEPS = [
     ("prioridad_envio", "La IA determina la prioridad de envío"),
 ]
 
-_queue = asyncio.Queue()
 
-
-async def _notify(node, reply_node, order_id, status, steps):
-    try:
-        remote = node.get_remote_actor(reply_node, "ticks")
-        await remote.send({"id": order_id, "status": status, "steps": list(steps)})
-    except Exception:
-        pass  # best-effort — Postgres already has the durable truth regardless
-
-
-async def _run_steps(node, order_id, reply_node):
-    # One broad try/except around the *entire* body, error path included:
-    # nothing here may propagate back to the caller (build_worker's
-    # `while True` loop) — an uncaught exception would crash this
-    # persistent worker, permanently losing 1/MAX_PARALLEL of the pool's
-    # capacity, since nothing will ever send it another message to
-    # restart its loop.
+async def process_order(msg):
+    order_id = msg["order_id"]
     steps = []
     try:
         for step_name, detail in STEPS:
             await asyncio.sleep(random.uniform(1.0, 3.0))  # llamada a la IA simulada
             steps.append({"step": step_name, "detail": detail})
             await db.append_step(order_id, steps[-1])
-            await _notify(node, reply_node, order_id, "en_progreso", steps)
+            await current_message().reply_stream({"status": "en_progreso", "steps": list(steps)})
         await db.mark_status(order_id, "completado")
-        await _notify(node, reply_node, order_id, "completado", steps)
+        await current_message().reply_final({"status": "completado", "steps": list(steps)})
     except Exception:
         try:
             await db.mark_status(order_id, "error")
         except Exception:
             pass
-        await _notify(node, reply_node, order_id, "error", steps)
-
-
-def build_worker(index):
-    @actor(name=f"order_worker_{index}")
-    class Worker:
-        def __init__(self, node_ref):
-            self.node = node_ref
-
-        async def receive(self, msg):
-            while True:
-                order_id, reply_node = await _queue.get()
-                await _run_steps(self.node, order_id, reply_node)
-
-    return Worker
-
-
-@actor(name="dispatcher")
-class Dispatcher:
-    """The only actor `app` needs to know the name of. Just hands the
-    request off to the shared queue — whichever pool worker is free next
-    picks it up."""
-
-    async def receive(self, msg):
-        _queue.put_nowait((msg["order_id"], msg["reply_node"]))
-
-
-async def start_pool(node, sup, n_workers):
-    """Spawns the dispatcher and the fixed pool, and kicks off each
-    worker's loop — an actor doesn't run anything until it receives its
-    first message."""
-    sup.spawn(Dispatcher)
-    for i in range(n_workers):
-        ref = sup.spawn(build_worker(i), node)
-        await ref.send({"start": True})
+        # Still reply_final(), not a plain exception: whoever is waiting
+        # on ask_stream() needs to see "error" and stop, not hang until
+        # its timeout just because this order specifically failed.
+        await current_message().reply_final({"status": "error", "steps": list(steps)})
