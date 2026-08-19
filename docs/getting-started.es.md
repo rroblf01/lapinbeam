@@ -73,6 +73,101 @@ abajo solo los actores de un `Supervisor` en concreto en vez de todo el
 nodo (p.ej. varios supervisores compartiendo un mismo nodo), llama
 directamente a `await sup.shutdown()`.
 
+## Concurrencia: un actor procesa un mensaje cada vez
+
+Cada actor tiene exactamente un mailbox y exactamente una tarea leyendo de
+él, en un bucle: coge un mensaje, ejecuta el handler, espera a que
+termine, coge el siguiente. `send()` no cambia eso — solo encola el
+mensaje y devuelve el control al instante, sin importar cuántos envíes
+seguidos:
+
+```python
+import asyncio
+from lapinbeam import ActorRef, Node, Supervisor, actor
+
+
+@actor(name="processor")
+class Processor:
+    async def receive(self, msg):
+        await asyncio.sleep(1)  # p.ej. una llamada lenta a otro servicio
+        print("terminado con", msg["id"])
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)
+        ref: ActorRef = sup.spawn(Processor)
+        for i in range(5):
+            await ref.send({"id": i})  # cada uno vuelve al instante...
+        await asyncio.sleep(6)          # ...pero este actor tarda ~5s en total igualmente
+```
+
+Los cinco `send()` devuelven el control en una fracción de segundo, pero
+`Processor` los termina uno a uno — el quinto llega sobre el segundo 5,
+no el primero. Esto es deliberado, no una limitación: como dentro de un
+mismo actor nunca hay más de un mensaje "en vuelo" a la vez, el código
+del handler puede leer y escribir `self.lo_que_sea` libremente, sin
+locks — la misma garantía que dan los procesos de Erlang.
+
+Si quieres que varias de esas llamadas corran de verdad a la vez, crea un
+**pool** de actores en vez de esperar que un solo actor se paralelice a
+sí mismo:
+
+```python
+import itertools
+
+N_WORKERS = 5
+
+
+def build_processor(index):
+    # @actor necesita un nombre único por actor, así que un pool son N
+    # clases distintas (una por índice), no N instancias de una misma
+    # clase decorada.
+    @actor(name=f"processor_{index}")
+    class Processor:
+        async def receive(self, msg):
+            await asyncio.sleep(1)
+            print(f"processor_{index} terminado con", msg["id"])
+
+    return Processor
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)  # one_for_one: un worker que revienta no afecta a sus hermanos
+        pool = [sup.spawn(build_processor(i)) for i in range(N_WORKERS)]
+        round_robin = itertools.cycle(pool)
+
+        for i in range(5):
+            ref = next(round_robin)
+            await ref.send({"id": i})
+        await asyncio.sleep(2)  # ahora ~1s en total, no ~5s
+```
+
+Cada actor del pool tiene su propio mailbox y su propia tarea, así que sus
+cinco `asyncio.sleep(1)` se solapan de verdad — los cinco terminan sobre
+el segundo 1 en vez del segundo 5. Elige cómo repartir el trabajo entre
+el pool según lo que necesites: round-robin (como arriba) para un
+reparto uniforme, `hash(clave) % N_WORKERS` para "el mismo tipo de
+mensaje siempre cae en el mismo worker", o `ask()` + `asyncio.gather()`
+sobre varios miembros del pool si necesitas esperar más de una respuesta
+a la vez (ver el patrón de mixture-of-experts en
+[Agentes de IA y MCP](ai-agents.es.md)).
+
+!!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound"
+    Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
+    o cualquier otro `await` que ceda el control de verdad) permite a
+    asyncio intercalar la espera de cada actor en el mismo hilo. **No**
+    ayuda a un handler que hace trabajo de CPU síncrono de verdad, sin
+    ningún `await` dentro — el bucle de eventos de asyncio es de un solo
+    hilo, así que N actores machacando números siguen corriendo uno detrás
+    de otro, igual de lento que N llamadas secuenciales dentro de un solo
+    actor. Para trabajo genuinamente CPU-bound, recurre a
+    `loop.run_in_executor()` (un pool de hilos o de procesos) dentro del
+    handler, o reparte el trabajo entre procesos de sistema operativo
+    separados — p.ej. varios `Node` de lapinbeam, posiblemente en máquinas
+    distintas, hablando por red igual que el ejemplo de dos nodos de abajo.
+
 ## Dos nodos hablando entre sí
 
 Esta es la demo de dos nodos de `examples/`, y lo único que merece la pena

@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: investigation_stream_postgres
+    environment:
+      - POSTGRES_USER=investigator
+      - POSTGRES_PASSWORD=investigator
+      - POSTGRES_DB=investigations
+    networks:
+      - investigation-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investigator -d investigations"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    # No named volume on purpose: this is a throwaway demo/benchmark
+    # environment, torn down and rebuilt between test runs.
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  app:
+    build: ./app
+    container_name: investigation_stream_app
+    environment:
+      - NODE_NAME=investigation_stream@app:9000
+      - DATABASE_URL=postgresql://investigator:investigator@postgres:5432/investigations
+      - MAX_PARALLEL=${MAX_PARALLEL:-200}
+    ports: ["8000:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - investigation-net
+
+networks:
+  investigation-net:
+    driver: bridge

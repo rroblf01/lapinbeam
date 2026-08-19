@@ -186,7 +186,8 @@ tests/         Rust integration tests
 tests-python/  Python tests (pytest)
 examples/      Two-node bidirectional demo, a multi-node HTTP pipeline demo,
                a seed-node discovery demo, a supervision-tree/links/groups
-               demo, plus E2E fixtures used by CI
+               demo, a FastAPI+SSE+Postgres parallel-workload demo, plus
+               E2E fixtures used by CI
 bench/         Throughput, latency, codec, and memory benchmarks
 ```
 

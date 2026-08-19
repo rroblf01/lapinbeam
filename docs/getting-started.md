@@ -72,6 +72,96 @@ will ever fill again. To tear down only one `Supervisor`'s actors instead
 of the whole node (e.g. multiple supervisors sharing one node), call
 `await sup.shutdown()` directly.
 
+## Concurrency: one actor handles one message at a time
+
+Every actor has exactly one mailbox and exactly one task reading from
+it, in a loop: pull a message, run the handler, wait for it to finish,
+pull the next one. `send()` doesn't change that — it only queues the
+message and returns immediately, regardless of how many you fire off:
+
+```python
+import asyncio
+from lapinbeam import ActorRef, Node, Supervisor, actor
+
+
+@actor(name="processor")
+class Processor:
+    async def receive(self, msg):
+        await asyncio.sleep(1)  # e.g. a slow downstream call
+        print("done with", msg["id"])
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)
+        ref: ActorRef = sup.spawn(Processor)
+        for i in range(5):
+            await ref.send({"id": i})  # each returns instantly...
+        await asyncio.sleep(6)          # ...but this actor still needs ~5s total
+```
+
+All five `send()` calls return in a fraction of a second, but `Processor`
+finishes them one at a time — the fifth one lands at roughly the 5-second
+mark, not the first. This is deliberate, not a limitation: since only one
+message is ever "in flight" inside a given actor, handler code can read
+and write `self.whatever` freely, with no locks — the same guarantee
+Erlang processes make.
+
+If you want several such calls to actually run at once, spawn a **pool**
+of actors instead of expecting one actor to parallelize itself:
+
+```python
+import itertools
+
+N_WORKERS = 5
+
+
+def build_processor(index):
+    # @actor needs a unique name per actor, so a pool is N distinct
+    # classes (one per index), not N instances of one decorated class.
+    @actor(name=f"processor_{index}")
+    class Processor:
+        async def receive(self, msg):
+            await asyncio.sleep(1)
+            print(f"processor_{index} done with", msg["id"])
+
+    return Processor
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)  # one_for_one: a crashed worker doesn't affect its siblings
+        pool = [sup.spawn(build_processor(i)) for i in range(N_WORKERS)]
+        round_robin = itertools.cycle(pool)
+
+        for i in range(5):
+            ref = next(round_robin)
+            await ref.send({"id": i})
+        await asyncio.sleep(2)  # now ~1s total, not ~5s
+```
+
+Each pooled actor has its own mailbox and its own task, so their five
+`asyncio.sleep(1)` calls genuinely overlap — all five finish around the
+1-second mark instead of the 5-second one. Pick how to route work across
+the pool based on what you need: round-robin (as above) for even spread,
+`hash(key) % N_WORKERS` for "the same kind of message always lands on the
+same worker," or `ask()` + `asyncio.gather()` across several pool
+members if you need to wait for more than one reply at once (see the
+mixture-of-experts pattern in [AI agents & MCP](ai-agents.md)).
+
+!!! warning "This parallelism is for I/O-bound work, not CPU-bound work"
+    A pool helps because `await asyncio.sleep(...)` (or a network call, or
+    any other `await` that actually yields control) lets asyncio interleave
+    every actor's wait on the same thread. It does **not** help a handler
+    that's doing real, synchronous CPU work with no `await` in it at all —
+    Python's asyncio event loop is single-threaded, so N actors all
+    crunching numbers still run one after another, exactly as slow as N
+    sequential calls inside one actor. For genuinely CPU-bound work, reach
+    for `loop.run_in_executor()` (a thread or process pool) inside the
+    handler, or split the work across separate OS processes — e.g. several
+    lapinbeam `Node`s, possibly on different machines, talking over the
+    network the same way the two-node example below does.
+
 ## Two nodes talking to each other
 
 This is the two-node demo in `examples/`, and the one thing worth being

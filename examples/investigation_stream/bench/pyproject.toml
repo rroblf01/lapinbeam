@@ -1,0 +1,10 @@
+[project]
+name = "investigation-stream-bench"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[tool.uv]
+package = false

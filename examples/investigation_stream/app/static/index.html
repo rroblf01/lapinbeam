@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Investigaciones</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+  #estado { font-weight: bold; }
+  #estado.en_progreso { color: #b8860b; }
+  #estado.completado { color: #1a7f37; }
+  #estado.error { color: #c0392b; }
+  ul { padding-left: 1.2rem; }
+  li { margin: 0.4rem 0; }
+  .muted { color: #666; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+  <h1>Investigación policial (demo)</h1>
+  <p><button id="nueva">Nueva investigación</button></p>
+  <p class="muted">id: <code id="id">—</code></p>
+  <p>estado: <span id="estado">—</span></p>
+  <ul id="pasos"></ul>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    let currentId = params.get("id");
+
+    function connect(id) {
+      currentId = id;
+      document.getElementById("id").textContent = id;
+      history.replaceState(null, "", `?id=${id}`);
+      document.getElementById("pasos").innerHTML = "";
+      const source = new EventSource(`/investigations/${id}/stream`);
+      source.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const estadoEl = document.getElementById("estado");
+        estadoEl.textContent = data.status;
+        estadoEl.className = data.status;
+        const pasosEl = document.getElementById("pasos");
+        pasosEl.innerHTML = "";
+        for (const paso of data.steps) {
+          const li = document.createElement("li");
+          li.textContent = `${paso.step}: ${paso.detail}`;
+          pasosEl.appendChild(li);
+        }
+        if (data.status !== "en_progreso") {
+          source.close();
+        }
+      };
+      source.onerror = () => source.close();
+    }
+
+    document.getElementById("nueva").addEventListener("click", async () => {
+      const res = await fetch("/investigations", { method: "POST" });
+      const { id } = await res.json();
+      connect(id);
+    });
+
+    if (currentId) {
+      connect(currentId);
+    }
+  </script>
+</body>
+</html>
