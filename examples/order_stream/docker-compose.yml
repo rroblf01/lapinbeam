@@ -1,15 +1,15 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: investigation_stream_postgres
+    container_name: order_stream_postgres
     environment:
-      - POSTGRES_USER=investigator
-      - POSTGRES_PASSWORD=investigator
-      - POSTGRES_DB=investigations
+      - POSTGRES_USER=warehouse
+      - POSTGRES_PASSWORD=warehouse
+      - POSTGRES_DB=orders
     networks:
-      - investigation-net
+      - order-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U investigator -d investigations"]
+      test: ["CMD-SHELL", "pg_isready -U warehouse -d orders"]
       interval: 2s
       timeout: 2s
       retries: 20
@@ -20,16 +20,16 @@ services:
 
   worker:
     build: ./worker
-    container_name: investigation_stream_worker
+    container_name: order_stream_worker
     environment:
       - NODE_NAME=worker@worker:9001
-      - DATABASE_URL=postgresql://investigator:investigator@postgres:5432/investigations
+      - DATABASE_URL=postgresql://warehouse:warehouse@postgres:5432/orders
       - MAX_PARALLEL=${MAX_PARALLEL:-200}
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - investigation-net
+      - order-net
     # NODE_NAME's host is also the interface the listener binds to, so
     # the healthcheck has to dial that same name, not `localhost` (see
     # docs/index.md's "Security" note in the main project).
@@ -41,11 +41,11 @@ services:
 
   app:
     build: ./app
-    container_name: investigation_stream_app
+    container_name: order_stream_app
     environment:
       - NODE_NAME=app@app:9000
       - WORKER_NODE=worker@worker:9001
-      - DATABASE_URL=postgresql://investigator:investigator@postgres:5432/investigations
+      - DATABASE_URL=postgresql://warehouse:warehouse@postgres:5432/orders
     ports: ["8000:8000"]
     depends_on:
       postgres:
@@ -53,8 +53,8 @@ services:
       worker:
         condition: service_healthy
     networks:
-      - investigation-net
+      - order-net
 
 networks:
-  investigation-net:
+  order-net:
     driver: bridge

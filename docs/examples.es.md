@@ -108,16 +108,16 @@ Dos cosas a tener en cuenta al salir de loopback:
 
 ## Una tubería multinodo detrás de una API HTTP
 
-`examples/police_investigation/` es un ejemplo más grande y realista que la
-demo de dos nodos de arriba: el envío de un formulario con FastAPI recorre
-**tres** contenedores/nodos separados (`api` → `investigator` → `archive`),
+`examples/sales_warehouse/` es un ejemplo más grande y realista que la
+demo de dos nodos de arriba: el envío de un pedido con FastAPI recorre
+**tres** contenedores/nodos separados (`api` → `fulfillment` → `archive`),
 cada uno con un salto de red real al siguiente, con el progreso reportado de
-vuelta al nodo de origen a medida que el caso pasa por cuatro actores
+vuelta al nodo de origen a medida que el pedido pasa por cuatro actores
 encadenados localmente. Su README documenta una medición completa de CPU y
 RAM (en reposo y bajo carga) usando solo `docker`, `docker compose` y `uv`.
 
 ```bash
-cd examples/police_investigation
+cd examples/sales_warehouse
 docker compose up --build
 ```
 

@@ -1,7 +1,7 @@
-"""Postgres access — a plain asyncpg pool, no ORM. `investigations` is the
-single source of truth: the SSE endpoint reconstructs history from it on
-every (re)connect, and the pubsub (`pubsub.py`) only carries *live* deltas
-on top of it while a client happens to be connected.
+"""Postgres access — a plain asyncpg pool, no ORM. `orders` is the single
+source of truth: the SSE endpoint reconstructs history from it on every
+(re)connect, and the pubsub (`pubsub.py`) only carries *live* deltas on
+top of it while a client happens to be connected.
 """
 
 import json
@@ -10,7 +10,7 @@ import os
 import asyncpg
 
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgresql://investigator:investigator@postgres:5432/investigations"
+    "DATABASE_URL", "postgresql://warehouse:warehouse@postgres:5432/orders"
 )
 
 _pool = None
@@ -18,14 +18,14 @@ _pool = None
 
 async def connect():
     global _pool
-    # A handful of connections is plenty: each investigation only touches
+    # A handful of connections is plenty: each order only touches
     # Postgres for a brief UPDATE between AI-simulation steps, never holds
-    # a connection for the ~1-3s "thinking" time — see investigation.py.
+    # a connection for the ~1-3s "thinking" time — see order.py.
     _pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=20)
     async with _pool.acquire() as conn:
         await conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS investigations (
+            CREATE TABLE IF NOT EXISTS orders (
                 id UUID PRIMARY KEY,
                 status TEXT NOT NULL,
                 steps JSONB NOT NULL DEFAULT '[]',
@@ -41,44 +41,44 @@ async def disconnect():
         await _pool.close()
 
 
-async def create_investigation(investigation_id):
+async def create_order(order_id):
     async with _pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO investigations (id, status, steps) VALUES ($1, 'en_progreso', '[]')",
-            investigation_id,
+            "INSERT INTO orders (id, status, steps) VALUES ($1, 'en_progreso', '[]')",
+            order_id,
         )
 
 
-async def append_step(investigation_id, step):
+async def append_step(order_id, step):
     """Appends one completed step to the JSONB array and bumps updated_at.
     Fetches-then-writes under the connection's own statement, no separate
     read round-trip — `steps || $2::jsonb` appends server-side."""
     async with _pool.acquire() as conn:
         await conn.execute(
             """
-            UPDATE investigations
+            UPDATE orders
             SET steps = steps || $2::jsonb, updated_at = now()
             WHERE id = $1
             """,
-            investigation_id,
+            order_id,
             json.dumps([step]),
         )
 
 
-async def mark_status(investigation_id, status):
+async def mark_status(order_id, status):
     async with _pool.acquire() as conn:
         await conn.execute(
-            "UPDATE investigations SET status = $2, updated_at = now() WHERE id = $1",
-            investigation_id,
+            "UPDATE orders SET status = $2, updated_at = now() WHERE id = $1",
+            order_id,
             status,
         )
 
 
-async def get_investigation(investigation_id):
+async def get_order(order_id):
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, status, steps, created_at, updated_at FROM investigations WHERE id = $1",
-            investigation_id,
+            "SELECT id, status, steps, created_at, updated_at FROM orders WHERE id = $1",
+            order_id,
         )
     if row is None:
         return None

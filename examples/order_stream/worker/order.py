@@ -1,20 +1,23 @@
 """A *fixed* pool of `MAX_PARALLEL` lapinbeam actors, created once at
-startup — see the top-level README's "De un actor por investigación a un
-pool fijo" section for why. `dispatcher` is the one reserved, well-known
-actor `app`'s node addresses directly (the same trick lapinbeam's own
-`lapinbeam.discovery`/`links`/`groups`/`registry` modules use for their
-control-plane actors) — it just drops the incoming investigation id onto
-the pool's shared queue and gets out of the way; the pool workers never
-need to be individually addressable from outside this node at all.
+startup — not one actor per order. Each worker loops forever, pulling the
+next order id off a shared queue and running its steps, then going back
+for the next one.
 
-Progress is pushed straight back to whichever `app` instance dispatched
-the job (`reply_node`, carried in the dispatch message itself) — not
-polled — by sending to a `ticks` actor on *that* node, reusing the same
-TCP connection `app` already opened to reach `dispatcher` in the first
-place. Postgres remains the durable source of truth regardless: a push
-that fails to land (`app` restarting at the wrong instant, say) is a
-missed *live* update, never lost data — anyone who reconnects afterward
-gets the real current state from Postgres.
+This replaced an earlier one-actor-per-order design: spawning (and later
+retiring) a brand new actor for every order meant real, synchronous CPU
+cost — a fresh Python class, registering a mailbox with the Rust core,
+etc. — paid once per order even though only `MAX_PARALLEL` of them could
+ever be doing real work at once. A fixed pool pays that cost exactly
+`MAX_PARALLEL` times, period, no matter how many orders are ever
+submitted — see the README's benchmark section for the measured
+before/after.
+
+A crash inside one order's steps is caught *inside* the loop, not allowed
+to escape `receive()`: since nothing ever sends this actor another
+message after its one startup "go", if `receive()` itself crashed the
+worker would never restart — the crashed message would be gone. Catching
+here means the worker just picks up the next order in the queue, same as
+a `one_for_one` restart would, without needing one.
 """
 
 import asyncio
@@ -25,24 +28,24 @@ from lapinbeam import actor
 import db
 
 STEPS = [
-    ("admision", "La IA admite la denuncia a trámite"),
-    ("recogida_pruebas", "La IA sugiere qué pruebas recopilar"),
-    ("analisis", "La IA analiza las pruebas y calcula un índice de sospecha"),
-    ("conclusion", "La IA redacta la conclusión final"),
+    ("validacion_pedido", "La IA valida los datos del pedido"),
+    ("comprobacion_stock", "La IA comprueba el stock disponible en el almacén"),
+    ("calculo_precio", "La IA calcula el importe final del pedido"),
+    ("prioridad_envio", "La IA determina la prioridad de envío"),
 ]
 
 _queue = asyncio.Queue()
 
 
-async def _notify(node, reply_node, investigation_id, status, steps):
+async def _notify(node, reply_node, order_id, status, steps):
     try:
         remote = node.get_remote_actor(reply_node, "ticks")
-        await remote.send({"id": investigation_id, "status": status, "steps": list(steps)})
+        await remote.send({"id": order_id, "status": status, "steps": list(steps)})
     except Exception:
         pass  # best-effort — Postgres already has the durable truth regardless
 
 
-async def _run_steps(node, investigation_id, reply_node):
+async def _run_steps(node, order_id, reply_node):
     # One broad try/except around the *entire* body, error path included:
     # nothing here may propagate back to the caller (build_worker's
     # `while True` loop) — an uncaught exception would crash this
@@ -54,28 +57,28 @@ async def _run_steps(node, investigation_id, reply_node):
         for step_name, detail in STEPS:
             await asyncio.sleep(random.uniform(1.0, 3.0))  # llamada a la IA simulada
             steps.append({"step": step_name, "detail": detail})
-            await db.append_step(investigation_id, steps[-1])
-            await _notify(node, reply_node, investigation_id, "en_progreso", steps)
-        await db.mark_status(investigation_id, "completado")
-        await _notify(node, reply_node, investigation_id, "completado", steps)
+            await db.append_step(order_id, steps[-1])
+            await _notify(node, reply_node, order_id, "en_progreso", steps)
+        await db.mark_status(order_id, "completado")
+        await _notify(node, reply_node, order_id, "completado", steps)
     except Exception:
         try:
-            await db.mark_status(investigation_id, "error")
+            await db.mark_status(order_id, "error")
         except Exception:
             pass
-        await _notify(node, reply_node, investigation_id, "error", steps)
+        await _notify(node, reply_node, order_id, "error", steps)
 
 
 def build_worker(index):
-    @actor(name=f"investigation_worker_{index}")
+    @actor(name=f"order_worker_{index}")
     class Worker:
         def __init__(self, node_ref):
             self.node = node_ref
 
         async def receive(self, msg):
             while True:
-                investigation_id, reply_node = await _queue.get()
-                await _run_steps(self.node, investigation_id, reply_node)
+                order_id, reply_node = await _queue.get()
+                await _run_steps(self.node, order_id, reply_node)
 
     return Worker
 
@@ -87,7 +90,7 @@ class Dispatcher:
     picks it up."""
 
     async def receive(self, msg):
-        _queue.put_nowait((msg["investigation_id"], msg["reply_node"]))
+        _queue.put_nowait((msg["order_id"], msg["reply_node"]))
 
 
 async def start_pool(node, sup, n_workers):

@@ -43,7 +43,19 @@ wheels = [
 ]
 
 [[package]]
-name = "investigation-stream-worker"
+name = "lapinbeam"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/c6/d79e0dad54d06cb2a36b9490294825b85ad04d63b357722a2c77f40ee720/lapinbeam-1.2.0.tar.gz", hash = "sha256:d816f0b2a7d9a2ae834cc83a71122ca83a1c19da507b7aefee6f32ed4f88c901", size = 251453, upload-time = "2026-08-19T06:59:17.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/d0/8a4e066bac8b44549df946a9a435cf96afe21f6e6e95a69a792e312d7d22/lapinbeam-1.2.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:13e8fa8a3d74a5baacb1734e2b54c42f512c3cfa79425b48d909405c8e140219", size = 1078277, upload-time = "2026-08-19T06:59:10.754Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/8b/e26b058ca656852331c7f205023e39876417841a5c01bb6ee05139c36f89/lapinbeam-1.2.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:8005f4e5e8e44eeddd7fa813c4bf97f183d2d3e82c72e4c3d93d9e955eeede23", size = 1060953, upload-time = "2026-08-19T06:59:12.696Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/17/4e8fae3da99d26d866c342bc734904f29850c2cb2f5e24316d716c1e2f27/lapinbeam-1.2.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:83f01d27206b88828e3b3e1beafb75665a7a18fed6058177ae704dda6d16612b", size = 1175386, upload-time = "2026-08-19T06:59:14.583Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/6e/7187907903c48ef75ad9ec5a51acd618231c9467bc2b717f59d58bed2f02/lapinbeam-1.2.0-cp311-abi3-win_amd64.whl", hash = "sha256:f81a7309743785aac47cd7764e8a12a17e54a8cc4efcd97a66779252e582f585", size = 972390, upload-time = "2026-08-19T06:59:16.107Z" },
+]
+
+[[package]]
+name = "order-stream-worker"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
@@ -55,16 +67,4 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "lapinbeam", specifier = ">=1.0.2" },
-]
-
-[[package]]
-name = "lapinbeam"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/00/c6/d79e0dad54d06cb2a36b9490294825b85ad04d63b357722a2c77f40ee720/lapinbeam-1.2.0.tar.gz", hash = "sha256:d816f0b2a7d9a2ae834cc83a71122ca83a1c19da507b7aefee6f32ed4f88c901", size = 251453, upload-time = "2026-08-19T06:59:17.757Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/d0/8a4e066bac8b44549df946a9a435cf96afe21f6e6e95a69a792e312d7d22/lapinbeam-1.2.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:13e8fa8a3d74a5baacb1734e2b54c42f512c3cfa79425b48d909405c8e140219", size = 1078277, upload-time = "2026-08-19T06:59:10.754Z" },
-    { url = "https://files.pythonhosted.org/packages/ed/8b/e26b058ca656852331c7f205023e39876417841a5c01bb6ee05139c36f89/lapinbeam-1.2.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:8005f4e5e8e44eeddd7fa813c4bf97f183d2d3e82c72e4c3d93d9e955eeede23", size = 1060953, upload-time = "2026-08-19T06:59:12.696Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/17/4e8fae3da99d26d866c342bc734904f29850c2cb2f5e24316d716c1e2f27/lapinbeam-1.2.0-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:83f01d27206b88828e3b3e1beafb75665a7a18fed6058177ae704dda6d16612b", size = 1175386, upload-time = "2026-08-19T06:59:14.583Z" },
-    { url = "https://files.pythonhosted.org/packages/aa/6e/7187907903c48ef75ad9ec5a51acd618231c9467bc2b717f59d58bed2f02/lapinbeam-1.2.0-cp311-abi3-win_amd64.whl", hash = "sha256:f81a7309743785aac47cd7764e8a12a17e54a8cc4efcd97a66779252e582f585", size = 972390, upload-time = "2026-08-19T06:59:16.107Z" },
 ]

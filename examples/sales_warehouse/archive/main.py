@@ -1,6 +1,6 @@
-"""Archive node: receives closed cases from the investigator and writes
-them to disk (a mounted volume), then confirms back to the case's origin
-node — a second, independent hop, on top of api->investigator->archive,
+"""Archive node: receives finished orders from fulfillment and writes
+them to disk (a mounted volume), then confirms back to the order's origin
+node — a second, independent hop, on top of api->fulfillment->archive,
 demonstrating that a reply doesn't have to retrace the same path it came
 from as long as the two nodes have a connection to each other.
 """
@@ -14,7 +14,7 @@ from lapinbeam import Node, Supervisor, actor
 
 API_NODE = os.environ.get("API_NODE", "api@api:9000")
 WORK_DELAY = float(os.environ.get("WORK_DELAY", "0.15"))
-DATA_DIR = Path(os.environ.get("ARCHIVE_DIR", "/data/cases"))
+DATA_DIR = Path(os.environ.get("ARCHIVE_DIR", "/data/orders"))
 
 
 @actor(name="archivist")
@@ -25,21 +25,21 @@ class ArchivistActor:
     async def receive(self, msg):
         await asyncio.sleep(WORK_DELAY)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        path = DATA_DIR / f"{msg['case_id']}.json"
+        path = DATA_DIR / f"{msg['order_id']}.json"
         record = {
-            "case_id": msg["case_id"],
+            "order_id": msg["order_id"],
             "formulario": msg["form"],
-            "evidencias": msg["evidencias"],
-            "indice_sospecha": msg["indice_sospecha"],
-            "conclusion": msg["conclusion"],
+            "productos": msg["productos"],
+            "importe_total": msg["importe_total"],
+            "decision_envio": msg["decision_envio"],
         }
         path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
-        print(f"[archive] caso {msg['case_id']} archivado en {path}")
+        print(f"[archive] pedido {msg['order_id']} archivado en {path}")
 
-        tracker = self.node.get_remote_actor(msg["origin_node"], "case_tracker")
+        tracker = self.node.get_remote_actor(msg["origin_node"], "order_tracker")
         await tracker.send(
             {
-                "case_id": msg["case_id"],
+                "order_id": msg["order_id"],
                 "status": "archivado",
                 "detail": {"archivo": str(path)},
             }

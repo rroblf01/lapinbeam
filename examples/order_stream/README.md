@@ -1,13 +1,13 @@
-# Ejemplo: investigaciones paralelas con FastAPI + SSE + Postgres
+# Ejemplo: pedidos en paralelo con FastAPI + SSE + Postgres
 
 Tres contenedores — `postgres`, `app` y `worker` — donde cada
-`POST /investigations` en `app` arranca, en `worker`, una investigación
-con 4 pasos secuenciales que simulan llamadas a un proveedor de IA
+`POST /orders` en `app` arranca, en `worker`, un pedido con 4 pasos
+secuenciales que simulan llamadas a un proveedor de IA
 (`await asyncio.sleep(random.uniform(1, 3))`). El progreso se guarda en
 Postgres y se retransmite en tiempo real por Server-Sent Events — cierra
-la pestaña, vuelve a abrir `/investigations/{id}/stream` y retoma
-exactamente por donde iba, porque el estado vive en Postgres, no en
-memoria de ningún proceso.
+la pestaña, vuelve a abrir `/orders/{id}/stream` y retoma exactamente por
+donde iba, porque el estado vive en Postgres, no en memoria de ningún
+proceso.
 
 ## Cómo está montado
 
@@ -22,11 +22,11 @@ CPU al trabajo que `worker` tiene entre manos.
 ```
 ┌─────────────── app (FastAPI) ───────────────┐   ┌────────── worker ──────────┐
 │                                              │   │                            │
-│  POST /investigations                       │   │  sup.spawn(Dispatcher)     │
+│  POST /orders                                │   │  sup.spawn(Dispatcher)     │
 │    crea fila en Postgres (en_progreso)       │   │  sup.spawn(Worker_0..N)    │
 │    dispatcher.send({id, reply_node=app_id}) ─┼──▶│    cada uno: while True:   │
 │                                              │   │      id = await queue.get()│
-│  GET /investigations/{id}/stream             │   │      for step in STEPS:    │
+│  GET /orders/{id}/stream                     │   │      for step in STEPS:    │
 │    lee Postgres (catch-up)                   │   │        sleep(1-3s)  # IA   │
 │    se suscribe a pubsub.py (memoria)         │   │        guarda en Postgres  │
 │    reenvía cada evento tal cual llega ───────┤◀──┼────────ticks.send({...})   │
@@ -44,8 +44,7 @@ CPU al trabajo que `worker` tiene entre manos.
   que usan `lapinbeam.discovery`/`links`/`groups`/`registry` para sus
   propios actores de control. Solo mete el id en la cola compartida; el
   pool de `MAX_PARALLEL` workers (creado una vez al arrancar, no uno por
-  investigación — ver la sección de abajo) es quien de verdad hace el
-  trabajo.
+  pedido — ver la sección de abajo) es quien de verdad hace el trabajo.
 - El progreso se **empuja** de vuelta a `app`, no se sondea: `worker`
   reutiliza la misma conexión que `app` abrió para alcanzar `dispatcher`
   (las conexiones lapinbeam sirven en ambos sentidos una vez
@@ -66,44 +65,43 @@ CPU al trabajo que `worker` tiene entre manos.
 ## Ejecutarlo
 
 ```bash
-cd examples/investigation_stream
+cd examples/order_stream
 docker compose up --build              # MAX_PARALLEL=200 por defecto (tamaño del pool en `worker`)
 # o, por ejemplo:
 MAX_PARALLEL=1000 docker compose up --build
 ```
 
-Abre <http://localhost:8000>, pulsa "Nueva investigación", y observa los
-pasos llegar en vivo. Cierra la pestaña y vuelve a abrir la misma URL
-(lleva el id en `?id=...`) — verás el estado actual al instante, tanto si
-sigue en marcha como si ya terminó.
+Abre <http://localhost:8000>, pulsa "Nuevo pedido", y observa los pasos
+llegar en vivo. Cierra la pestaña y vuelve a abrir la misma URL (lleva el
+id en `?id=...`) — verás el estado actual al instante, tanto si sigue en
+marcha como si ya terminó.
 
 ## Generador de carga
 
 ```bash
 cd bench
-uv run python load_test.py -n 1000   # dispara N investigaciones, sigue
-                                      # el SSE de cada una hasta el final
+uv run python load_test.py -n 1000   # dispara N pedidos, sigue el SSE
+                                      # de cada uno hasta el final
 ```
 
-## De un actor por investigación a un pool fijo: qué cambió y qué se midió
+## De un actor por pedido a un pool fijo: qué cambió y qué se midió
 
 La primera versión de este ejemplo creaba **un actor lapinbeam nuevo por
-cada investigación** (una clase Python nueva, registrada en el core de
-Rust, con su propio mailbox), limitando solo la llamada a la IA con un
-semáforo — y retirándolo (`ask()` + `ref.task.cancel()`) al terminar. Con
-1000 investigaciones eso son 1000 clases creadas y 1000 retiradas, aunque
-solo `MAX_PARALLEL` pudieran hacer trabajo útil a la vez. Ese coste de
-creación/destrucción — no el trabajo en sí — era lo que aparecía como
-ráfagas de CPU. La versión con pool fijo (workers creados una sola vez al
-arrancar) mejoró justo eso — la comparación completa, con números reales,
-está más abajo.
+cada pedido** (una clase Python nueva, registrada en el core de Rust, con
+su propio mailbox), limitando solo la llamada a la IA con un semáforo — y
+retirándolo (`ask()` + `ref.task.cancel()`) al terminar. Con 1000 pedidos
+eso son 1000 clases creadas y 1000 retiradas, aunque solo `MAX_PARALLEL`
+pudieran hacer trabajo útil a la vez. Ese coste de creación/destrucción —
+no el trabajo en sí — era lo que aparecía como ráfagas de CPU. La versión
+con pool fijo (workers creados una sola vez al arrancar) mejoró justo
+eso — la comparación completa, con números reales, está más abajo.
 
-Repetí las mismas corridas con los tres diseños (actor-por-investigación
-en un proceso único; pool fijo en un proceso único; pool fijo repartido
-en `app`+`worker` separados, el estado actual), contra los mismos
+Repetí las mismas corridas con los tres diseños (actor-por-pedido en un
+proceso único; pool fijo en un proceso único; pool fijo repartido en
+`app`+`worker` separados, el estado actual), contra los mismos
 contenedores, Postgres limpio antes de cada una:
 
-| Escenario | v1: actor por investigación (1 proceso) | v2: pool fijo (1 proceso) | v3: pool fijo, `app`+`worker` separados |
+| Escenario | v1: actor por pedido (1 proceso) | v2: pool fijo (1 proceso) | v3: pool fijo, `app`+`worker` separados |
 | --- | --- | --- | --- |
 | N=1 | 9.6s · CPU 0.1% | 7.6s · CPU 0.1% | — |
 | N=10 | 9.2s · CPU 0.8% | 8.7s · CPU 0.6% | — |
@@ -121,11 +119,11 @@ actores pueda evitar.
 
 ### Lecturas
 
-- **La mejora del pool fijo frente al actor-por-investigación se
-  mantiene al separar `app` y `worker`**: con 1000 investigaciones y
-  `MAX_PARALLEL=200`, v3 completa 997/1000 (v1: 994/1000) en un tiempo
-  comparable a v1 y v2, sin que ningún contenedor se acerque a saturar su
-  CPU (picos de 51% y 15%, en una máquina de 12 cores).
+- **La mejora del pool fijo frente al actor-por-pedido se mantiene al
+  separar `app` y `worker`**: con 1000 pedidos y `MAX_PARALLEL=200`, v3
+  completa 997/1000 (v1: 994/1000) en un tiempo comparable a v1 y v2, sin
+  que ningún contenedor se acerque a saturar su CPU (picos de 51% y 15%,
+  en una máquina de 12 cores).
 - **La CPU se reparte según el rol de cada contenedor**: `app` (HTTP +
   reenvío de SSE) siempre pica más alto que `worker` (el trabajo real) —
   en la corrida de 1000, 51.2% contra 15.3%. Tiene sentido: gestionar
@@ -134,9 +132,9 @@ actores pueda evitar.
   responsabilidades que se buscaba al partir el proceso en dos.
 - **`worker` apenas mueve su RAM bajo carga** (~39→41 MiB durante toda la
   corrida de 1000) — el pool de actores es un coste fijo pagado al
-  arrancar; procesar más o menos investigaciones no lo cambia. Toda la
-  variación de RAM ocurre en `app` (69→95 MiB), donde sí crece con el
-  número de conexiones HTTP/SSE abiertas a la vez.
+  arrancar; procesar más o menos pedidos no lo cambia. Toda la variación
+  de RAM ocurre en `app` (69→95 MiB), donde sí crece con el número de
+  conexiones HTTP/SSE abiertas a la vez.
 - **Separar procesos tiene un coste fijo pequeño**: dos runtimes Python
   separados (cada uno con su propio intérprete, su propio asyncio, su
   propia conexión a Postgres) pesan un poco más en conjunto que uno
@@ -144,23 +142,21 @@ actores pueda evitar.
   pieza por separado.
 - Los picos de CPU que quedan siguen siendo el mismo artefacto que ya se
   documentó antes: ráfagas cortas (~1-1.5s) por lo sincronizado del propio
-  test (1000 investigaciones naciendo y terminando casi a la vez), no una
-  meseta sostenida — con tráfico real, repartido en el tiempo, esto se
-  aplanaría.
+  test (1000 pedidos naciendo y terminando casi a la vez), no una meseta
+  sostenida — con tráfico real, repartido en el tiempo, esto se aplanaría.
 
 ## Lo que este ejemplo no resuelve (y por qué es aceptable aquí)
 
-- **Un único `worker`.** Si se cae, ninguna investigación nueva se
-  procesa hasta que vuelva (las ya encoladas en Postgres como
-  `en_progreso` se quedan huérfanas hasta entonces) — `docker compose`
-  lo reinicia solo, pero no hay redundancia real. Para eso haría falta
-  más de un `worker` detrás de un mecanismo de reparto — `app` podría
-  conectarse a varios y elegir uno por `round_robin`/salud, o los propios
-  `worker` podrían coordinarse con `lapinbeam.registry` (ver
+- **Un único `worker`.** Si se cae, ningún pedido nuevo se procesa hasta
+  que vuelva (los ya encolados en Postgres como `en_progreso` se quedan
+  huérfanos hasta entonces) — `docker compose` lo reinicia solo, pero no
+  hay redundancia real. Para eso haría falta más de un `worker` detrás de
+  un mecanismo de reparto — `app` podría conectarse a varios y elegir uno
+  por `round_robin`/salud, o los propios `worker` podrían coordinarse con
+  `lapinbeam.registry` (ver
   [Patrones inspirados en OTP](../../docs/otp-patterns.md)) para que solo
   uno se anuncie como activo a la vez.
-- **Reparto por cola compartida, no por prioridad.** Todas las
-  investigaciones son iguales para el pool — no hay forma de decir "esta
-  es más urgente, procésala antes que las que ya están en cola". Para
-  eso haría falta una cola con prioridad en vez de un `asyncio.Queue`
-  simple.
+- **Reparto por cola compartida, no por prioridad.** Todos los pedidos
+  son iguales para el pool — no hay forma de decir "este es más urgente,
+  procésalo antes que los que ya están en cola". Para eso haría falta una
+  cola con prioridad en vez de un `asyncio.Queue` simple.

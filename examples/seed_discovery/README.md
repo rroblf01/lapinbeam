@@ -1,6 +1,6 @@
 # Ejemplo: descubrimiento de nodos vía nodo semilla
 
-En `examples/app_node_*.py` y `examples/police_investigation/`, cada nodo
+En `examples/app_node_*.py` y `examples/sales_warehouse/`, cada nodo
 tiene que conocer explícitamente la dirección exacta de cada peer al que
 necesita hablar — para una malla de N nodos, eso es hasta N·(N-1)/2
 direcciones que alguien tiene que configurar a mano.

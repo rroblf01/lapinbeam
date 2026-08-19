@@ -1,10 +1,10 @@
-"""FastAPI HTTP layer only — the actual investigation work happens on a
-separate `worker` node (see worker/investigation.py), reached over the
-network like any other lapinbeam peer. This container never runs an
-investigation's steps itself; it only creates the Postgres row, dispatches
-a message to `worker`'s `dispatcher` actor, and relays whatever `worker`
-pushes back (via the local `ticks` actor, see ticks.py) into the SSE
-stream the browser is watching.
+"""FastAPI HTTP layer only — the actual order work happens on a separate
+`worker` node (see worker/order.py), reached over the network like any
+other lapinbeam peer. This container never runs an order's steps itself;
+it only creates the Postgres row, dispatches a message to `worker`'s
+`dispatcher` actor, and relays whatever `worker` pushes back (via the
+local `ticks` actor, see ticks.py) into the SSE stream the browser is
+watching.
 """
 
 import asyncio
@@ -57,50 +57,50 @@ async def index():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
-@app.post("/investigations")
-async def create_investigation():
-    investigation_id = str(uuid.uuid4())
-    await db.create_investigation(investigation_id)
+@app.post("/orders")
+async def create_order():
+    order_id = str(uuid.uuid4())
+    await db.create_order(order_id)
     dispatcher = node.get_remote_actor(WORKER_NODE, "dispatcher")
-    await dispatcher.send({"investigation_id": investigation_id, "reply_node": node.local_id})
-    return {"id": investigation_id}
+    await dispatcher.send({"order_id": order_id, "reply_node": node.local_id})
+    return {"id": order_id}
 
 
-@app.get("/investigations/{investigation_id}")
-async def get_investigation(investigation_id: str):
-    found = await db.get_investigation(investigation_id)
+@app.get("/orders/{order_id}")
+async def get_order(order_id: str):
+    found = await db.get_order(order_id)
     if found is None:
-        raise HTTPException(status_code=404, detail="investigation not found")
+        raise HTTPException(status_code=404, detail="order not found")
     return found
 
 
-@app.get("/investigations/{investigation_id}/stream")
-async def stream_investigation(investigation_id: str):
-    found = await db.get_investigation(investigation_id)
+@app.get("/orders/{order_id}/stream")
+async def stream_order(order_id: str):
+    found = await db.get_order(order_id)
     if found is None:
-        raise HTTPException(status_code=404, detail="investigation not found")
+        raise HTTPException(status_code=404, detail="order not found")
 
     async def events():
         # Subscribe *before* the catch-up read — a step that completes in
         # the gap between "read current state" and "register as a
         # subscriber" would otherwise notify no one.
-        queue = pubsub.subscribe(investigation_id)
+        queue = pubsub.subscribe(order_id)
         try:
-            current = await db.get_investigation(investigation_id)
+            current = await db.get_order(order_id)
             yield _sse(current)
             if current["status"] != "en_progreso":
                 return
             while True:
                 # `worker` pushes the full current state directly in
-                # every tick (see worker/investigation.py's `_notify`) —
-                # no re-read of Postgres needed here at all, unlike a
-                # design that only got a "something changed" signal.
+                # every tick (see worker/order.py's `_notify`) — no
+                # re-read of Postgres needed here at all, unlike a design
+                # that only got a "something changed" signal.
                 event = await queue.get()
                 yield _sse(event)
                 if event["status"] in ("completado", "error"):
                     return
         finally:
-            pubsub.unsubscribe(investigation_id, queue)
+            pubsub.unsubscribe(order_id, queue)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Investigaciones</title>
+<title>Pedidos</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
   button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
@@ -16,8 +16,8 @@
 </style>
 </head>
 <body>
-  <h1>Investigación policial (demo)</h1>
-  <p><button id="nueva">Nueva investigación</button></p>
+  <h1>Almacén de ventas (demo)</h1>
+  <p><button id="nueva">Nuevo pedido</button></p>
   <p class="muted">id: <code id="id">—</code></p>
   <p>estado: <span id="estado">—</span></p>
   <ul id="pasos"></ul>
@@ -31,7 +31,7 @@
       document.getElementById("id").textContent = id;
       history.replaceState(null, "", `?id=${id}`);
       document.getElementById("pasos").innerHTML = "";
-      const source = new EventSource(`/investigations/${id}/stream`);
+      const source = new EventSource(`/orders/${id}/stream`);
       source.onmessage = (event) => {
         const data = JSON.parse(event.data);
         const estadoEl = document.getElementById("estado");
@@ -52,7 +52,7 @@
     }
 
     document.getElementById("nueva").addEventListener("click", async () => {
-      const res = await fetch("/investigations", { method: "POST" });
+      const res = await fetch("/orders", { method: "POST" });
       const { id } = await res.json();
       connect(id);
     });

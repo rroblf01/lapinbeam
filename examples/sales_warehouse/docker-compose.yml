@@ -1,18 +1,18 @@
 services:
   archive:
     build: ./archive
-    container_name: police_archive
+    container_name: warehouse_archive
     environment:
       - NODE_NAME=archive@archive:9002
       - API_NODE=api@api:9000
     volumes:
-      - cases_data:/data/cases
+      - orders_data:/data/orders
     networks:
-      - police-net
+      - warehouse-net
     # `NODE_NAME`'s host is also the interface the Rust listener binds to
     # (see docs/index.md's "Security" note in the main project) — since
     # it's the container's own service name, the socket is bound to
-    # whatever IP that resolves to on `police-net`, not to loopback. The
+    # whatever IP that resolves to on `warehouse-net`, not to loopback. The
     # healthcheck has to dial that same name, not `localhost`.
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('archive', 9002), timeout=2)"]
@@ -20,37 +20,37 @@ services:
       timeout: 2s
       retries: 20
 
-  investigator:
-    build: ./investigator
-    container_name: police_investigator
+  fulfillment:
+    build: ./fulfillment
+    container_name: warehouse_fulfillment
     environment:
-      - NODE_NAME=investigator@investigator:9001
+      - NODE_NAME=fulfillment@fulfillment:9001
       - ARCHIVE_NODE=archive@archive:9002
       - WORK_DELAY=${WORK_DELAY:-0.15}
     depends_on:
       archive:
         condition: service_healthy
     networks:
-      - police-net
+      - warehouse-net
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('investigator', 9001), timeout=2)"]
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('fulfillment', 9001), timeout=2)"]
       interval: 2s
       timeout: 2s
       retries: 20
 
   api:
     build: ./api
-    container_name: police_api
+    container_name: warehouse_api
     environment:
       - NODE_NAME=api@api:9000
-      - INVESTIGATOR_NODE=investigator@investigator:9001
+      - FULFILLMENT_NODE=fulfillment@fulfillment:9001
     depends_on:
-      investigator:
+      fulfillment:
         condition: service_healthy
     ports:
       - "8000:8000"
     networks:
-      - police-net
+      - warehouse-net
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
       interval: 2s
@@ -58,8 +58,8 @@ services:
       retries: 20
 
 networks:
-  police-net:
+  warehouse-net:
     driver: bridge
 
 volumes:
-  cases_data:
+  orders_data:

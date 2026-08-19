@@ -6,6 +6,6 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev
 
-COPY main.py db.py investigation.py ./
+COPY main.py db.py order.py ./
 
 CMD ["uv", "run", "--no-sync", "python", "main.py"]

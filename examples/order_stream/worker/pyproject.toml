@@ -1,5 +1,5 @@
 [project]
-name = "investigation-stream-worker"
+name = "order-stream-worker"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [

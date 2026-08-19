@@ -107,16 +107,16 @@ Two things to plan for once you leave loopback:
 
 ## A multi-node pipeline behind an HTTP API
 
-`examples/police_investigation/` is a bigger, more realistic example than
-the two-node demo above: a FastAPI form submission fans out across **three**
-separate node containers (`api` → `investigator` → `archive`), each doing a
+`examples/sales_warehouse/` is a bigger, more realistic example than the
+two-node demo above: a FastAPI order submission fans out across **three**
+separate node containers (`api` → `fulfillment` → `archive`), each doing a
 real network hop to the next, with progress tracked back to the originating
-node as the case moves through four chained local actors. Its README
+node as the order moves through four chained local actors. Its README
 documents a full CPU/RAM measurement (idle vs. under load) using nothing but
 `docker`, `docker compose`, and `uv`.
 
 ```bash
-cd examples/police_investigation
+cd examples/sales_warehouse
 docker compose up --build
 ```
 

@@ -6,23 +6,23 @@ process has restarted, so nothing here needs to survive a restart."""
 
 import asyncio
 
-_subscribers = {}  # investigation_id -> set[asyncio.Queue]
+_subscribers = {}  # order_id -> set[asyncio.Queue]
 
 
-def subscribe(investigation_id):
+def subscribe(order_id):
     queue = asyncio.Queue()
-    _subscribers.setdefault(investigation_id, set()).add(queue)
+    _subscribers.setdefault(order_id, set()).add(queue)
     return queue
 
 
-def unsubscribe(investigation_id, queue):
-    subs = _subscribers.get(investigation_id)
+def unsubscribe(order_id, queue):
+    subs = _subscribers.get(order_id)
     if subs is not None:
         subs.discard(queue)
         if not subs:
-            _subscribers.pop(investigation_id, None)
+            _subscribers.pop(order_id, None)
 
 
-def publish(investigation_id, event):
-    for queue in _subscribers.get(investigation_id, ()):
+def publish(order_id, event):
+    for queue in _subscribers.get(order_id, ()):
         queue.put_nowait(event)

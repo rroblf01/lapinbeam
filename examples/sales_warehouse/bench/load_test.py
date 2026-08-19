@@ -1,14 +1,14 @@
-"""Load generator for the police-investigation example's API.
+"""Load generator for the sales-warehouse example's API.
 
 Zero third-party dependencies on purpose, so it runs with nothing more
 than `uv run python bench/load_test.py` — uv doesn't even need to resolve
 anything — or a plain `python3 bench/load_test.py`.
 
-Fires POST /investigations concurrently and reports HTTP-level throughput
-and latency. This only measures how fast the API *accepts* a case (202
-Accepted, fire-and-forget) — not how long the full investigation pipeline
-takes to reach "archivado". Poll GET /investigations after a run to see
-completed cases.
+Fires POST /orders concurrently and reports HTTP-level throughput and
+latency. This only measures how fast the API *accepts* an order (202
+Accepted, fire-and-forget) — not how long the full fulfillment pipeline
+takes to reach "archivado". Poll GET /orders after a run to see completed
+orders.
 """
 
 import argparse
@@ -19,27 +19,27 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-NOMBRES = ["Ana", "Luis", "Marta", "Carlos", "Sofía", "Javier", "Elena", "Pablo"]
-DESCRIPCIONES = [
-    "robo con fuerza en domicilio",
-    "hurto en vía pública",
-    "daños a vehículo estacionado",
-    "amenazas reiteradas",
-    "estafa telefónica",
+CLIENTES = ["Ana", "Luis", "Marta", "Carlos", "Sofía", "Javier", "Elena", "Pablo"]
+PRODUCTOS = [
+    "monitor 27 pulgadas",
+    "teclado mecánico",
+    "silla de oficina",
+    "portátil 15 pulgadas",
+    "auriculares inalámbricos",
 ]
-UBICACIONES = ["Calle Mayor 12", "Avenida del Puerto 5", "Plaza España 3", "Calle Sol 21"]
+DIRECCIONES = ["Calle Mayor 12", "Avenida del Puerto 5", "Plaza España 3", "Calle Sol 21"]
 
 
 def send_one(base_url):
     body = json.dumps(
         {
-            "denunciante": random.choice(NOMBRES),
-            "descripcion": random.choice(DESCRIPCIONES),
-            "ubicacion": random.choice(UBICACIONES),
+            "cliente": random.choice(CLIENTES),
+            "producto": random.choice(PRODUCTOS),
+            "direccion_envio": random.choice(DIRECCIONES),
         }
     ).encode("utf-8")
     req = urllib.request.Request(
-        f"{base_url}/investigations",
+        f"{base_url}/orders",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -61,7 +61,7 @@ def main():
     parser.add_argument("-c", "--concurrency", type=int, default=25)
     args = parser.parse_args()
 
-    print(f"Enviando {args.requests} denuncias a {args.base_url} (concurrencia={args.concurrency})...")
+    print(f"Enviando {args.requests} pedidos a {args.base_url} (concurrencia={args.concurrency})...")
     start = time.perf_counter()
     statuses = {}
     latencies = []
@@ -79,7 +79,7 @@ def main():
     print(f"Total: {total:.2f}s  ({args.requests / total:.1f} req/s)")
     print(f"Códigos de estado: {statuses}")
     print(
-        "Latencia HTTP de aceptación (no de la investigación completa): "
+        "Latencia HTTP de aceptación (no del pedido completo): "
         f"p50={p50 * 1000:.1f}ms p99={p99 * 1000:.1f}ms"
     )
 

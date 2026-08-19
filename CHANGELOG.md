@@ -132,8 +132,9 @@ of `1.0.0`, a breaking change requires a major version bump.
   ping-pong between every connected pair, bounded only by scheduler/network
   speed, running from the moment two nodes connect and never stopping.
   Discovered while measuring baseline resource usage for the new
-  `examples/police_investigation/` demo, where three otherwise-idle
-  containers each showed 70-140% CPU at rest instead of the expected ~0%.
+  `examples/sales_warehouse/` demo (named `police_investigation` at the
+  time), where three otherwise-idle containers each showed 70-140% CPU at
+  rest instead of the expected ~0%.
   Confirmed independently of that example with a plain two-node idle check
   (`node_a.connect_peer(node_b)`, then 10s of doing nothing): ~78% of one
   CPU core, dropping to 0.0% after the fix. A heartbeat now needs no reply

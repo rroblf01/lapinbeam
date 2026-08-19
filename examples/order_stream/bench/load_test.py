@@ -1,10 +1,10 @@
-"""Load generator for the investigation_stream example.
+"""Load generator for the order_stream example.
 
-Fires N investigations concurrently, follows each one's own SSE stream
-until it finishes, and reports how long each one actually took — this is
-what shows whether N investigations really ran in parallel (all finishing
-around the same time, close to a single investigation's own ~4-12s) or
-serialized behind each other (finishing times spread out linearly with N).
+Fires N orders concurrently, follows each one's own SSE stream until it
+finishes, and reports how long each one actually took — this is what
+shows whether N orders really ran in parallel (all finishing around the
+same time, close to a single order's own ~4-12s) or serialized behind
+each other (finishing times spread out linearly with N).
 
 Needs `httpx` (not stdlib) since it has to hold N concurrent streaming
 connections open at once — see bench/pyproject.toml.
@@ -21,12 +21,12 @@ import httpx
 
 async def run_one(client, base_url):
     start = time.perf_counter()
-    resp = await client.post(f"{base_url}/investigations")
+    resp = await client.post(f"{base_url}/orders")
     resp.raise_for_status()
-    investigation_id = resp.json()["id"]
+    order_id = resp.json()["id"]
 
     status = None
-    async with client.stream("GET", f"{base_url}/investigations/{investigation_id}/stream", timeout=None) as r:
+    async with client.stream("GET", f"{base_url}/orders/{order_id}/stream", timeout=None) as r:
         async for line in r.aiter_lines():
             if not line.startswith("data: "):
                 continue
@@ -35,7 +35,7 @@ async def run_one(client, base_url):
             if status != "en_progreso":
                 break
     elapsed = time.perf_counter() - start
-    return investigation_id, status, elapsed
+    return order_id, status, elapsed
 
 
 async def main():
@@ -45,11 +45,11 @@ async def main():
     args = parser.parse_args()
 
     # httpx's default pool (100 connections) is meant for short-lived
-    # requests — here every investigation holds its SSE connection open
-    # for the investigation's whole lifetime, so the pool must fit all of
-    # them at once or later ones queue for a connection until the earlier
-    # ones' *entire* investigations finish, which can cascade into
-    # everything timing out. Not a server-side limit — just this script's.
+    # requests — here every order holds its SSE connection open for the
+    # order's whole lifetime, so the pool must fit all of them at once or
+    # later ones queue for a connection until the earlier ones' *entire*
+    # orders finish, which can cascade into everything timing out. Not a
+    # server-side limit — just this script's.
     limits = httpx.Limits(max_connections=args.count + 20, max_keepalive_connections=args.count + 20)
     async with httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(60.0)) as client:
         t0 = time.perf_counter()
@@ -64,12 +64,12 @@ async def main():
     times = [r[2] for r in ok]
 
     print(f"N={args.count}  wall-clock total={wall:.2f}s")
-    print(f"  completadas: {len(ok)}  fallidas: {len(failed)}")
+    print(f"  completados: {len(ok)}  fallidos: {len(failed)}")
     if times:
         times.sort()
         p50 = statistics.median(times)
         p90 = times[int(0.9 * (len(times) - 1))]
-        print(f"  tiempo por investigación: min={min(times):.2f}s  p50={p50:.2f}s  "
+        print(f"  tiempo por pedido: min={min(times):.2f}s  p50={p50:.2f}s  "
               f"p90={p90:.2f}s  max={max(times):.2f}s")
     for r in failed[:5]:
         print("  fallo:", r)
