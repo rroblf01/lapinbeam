@@ -5,8 +5,10 @@ from .context import MessageMeta, current_actor_ref, current_message
 from .discovery import join_via_seeds, register_discovery
 from .groups import join_group, leave_group, members, register_groups
 from .links import Exit, link, register_links, trap_exit, unlink
+from .monitors import Down, demonitor, monitor, register_monitors
 from .node import Node
 from .refs import ActorRef, RemoteRef, SupervisorRef
+from .registry import register_registry, register_name, unregister_name, whereis_name
 from .supervisor import Supervisor
 
 __all__ = [
@@ -35,4 +37,12 @@ __all__ = [
     "leave_group",
     "members",
     "register_groups",
+    "monitor",
+    "demonitor",
+    "Down",
+    "register_monitors",
+    "register_name",
+    "unregister_name",
+    "whereis_name",
+    "register_registry",
 ]

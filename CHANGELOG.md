@@ -8,6 +8,52 @@ of `1.0.0`, a breaking change requires a major version bump.
 
 ## [Unreleased]
 
+### Added
+
+- **`lapinbeam.monitors`**: one-way, non-lethal process monitoring —
+  `monitor(other)`/`demonitor(ref)`. The Erlang counterpart to
+  `lapinbeam.links` for when you want to know an actor/peer is gone
+  without any risk of being killed by it, or any obligation to kill it:
+  the watcher gets a `Down(ref, actor, reason)` message when the
+  monitored actor exits for good; nothing happens to either side
+  otherwise. Same pid-scoping as links (a monitor doesn't fire on an
+  ordinary in-place restart within budget) and the same reserved-actor
+  trick (`__lapinbeam_monitor__`, via `register_monitors(node, sup)`) for
+  the cross-node case — no wire protocol changes, graceful
+  `actor_not_found` degradation against a peer that hasn't called
+  `register_monitors()`.
+- **`lapinbeam.registry`**: cluster-wide unique name registration —
+  `register_name(node, name)`/`unregister_name(node, name)`/
+  `whereis_name(node, name)`, Erlang's `:global`. One owner per name
+  across the whole connected cluster; `register_name()` raises
+  `ValueError` on a locally-known conflict, the same "no silent
+  collision" contract `Supervisor.spawn()` already enforces for local
+  actor names. Converges the same way `lapinbeam.groups` does (delta +
+  one-time snapshot on connect, via `register_registry(node, sup)`), and
+  is pid-scoped the same way (a restarted actor releases every name it
+  owned). A conflicting claim that arrives after the fact — two nodes
+  that each raced to register the same name before learning about each
+  other — doesn't get silently resolved: it surfaces as
+  `on_event(kind="registry_conflict")` and whichever claim a given node
+  saw first is kept there; see the module docstring for exactly what
+  this does and doesn't guarantee.
+- Both new modules add 17 tests (`tests-python/test_monitors.py`,
+  `test_registry.py`), including cross-node cases (real sockets, two
+  `Node`s), pid-scoped-restart regressions, and — for the registry — the
+  concurrent-claim conflict case above. Measured before shipping: 50
+  cross-node monitor pairs + 50 registered names sit at 0.12% CPU at
+  rest, and 20,000 monitor+demonitor / register+unregister cycles
+  between two static actors (~40k cycles/s) leave RSS completely flat
+  with zero dangling bookkeeping entries afterward — no background loop,
+  timer, or periodic polling added.
+- `examples/cluster_supervision/` now also exercises `lapinbeam.monitors`
+  (the hub monitors *and* links each worker, so the same crash delivers
+  both an `Exit` and a `Down`) and `lapinbeam.registry` (one worker
+  registers a cluster-wide name the hub looks up with `whereis_name()`,
+  watching it appear and then disappear when that worker fails for
+  good) — all five OTP-inspired primitives now proven across the same
+  three real containers.
+
 ## [1.1.0] - 2026-08-18
 
 ### Added

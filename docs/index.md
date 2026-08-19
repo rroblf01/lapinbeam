@@ -55,9 +55,12 @@ want both in the same system.
   [Examples](examples.md#node-discovery-via-a-seed-node).
 - Nested supervision trees: `Supervisor.spawn_supervisor()` lets a
   `Supervisor` supervise another `Supervisor`.
-- Bidirectional links (`lapinbeam.links`) and cluster-wide named process
-  groups (`lapinbeam.groups`), both local- and cross-node — no wire
-  protocol changes for either.
+- Bidirectional links (`lapinbeam.links`) and one-way, non-lethal monitors
+  (`lapinbeam.monitors`), both local- and cross-node — no wire protocol
+  changes for either.
+- Cluster-wide named process groups (`lapinbeam.groups`) and cluster-wide
+  unique name registration (`lapinbeam.registry`), both local- and
+  cross-node — no wire protocol changes for either.
 
 ## Security
 

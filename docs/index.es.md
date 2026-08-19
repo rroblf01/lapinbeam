@@ -57,9 +57,13 @@ quieras los dos en el mismo sistema.
   [Ejemplos](examples.es.md#descubrimiento-de-nodos-via-nodo-semilla).
 - Árboles de supervisión anidados: `Supervisor.spawn_supervisor()` permite
   que un `Supervisor` supervise a otro `Supervisor`.
-- Links bidireccionales (`lapinbeam.links`) y grupos de proceso con nombre
-  a nivel de clúster (`lapinbeam.groups`), tanto locales como entre
-  nodos — sin cambios en el protocolo de red en ninguno de los dos casos.
+- Links bidireccionales (`lapinbeam.links`) y monitors unidireccionales y
+  no letales (`lapinbeam.monitors`), tanto locales como entre nodos — sin
+  cambios en el protocolo de red en ninguno de los dos casos.
+- Grupos de proceso con nombre a nivel de clúster (`lapinbeam.groups`) y
+  registro de nombres únicos a nivel de clúster (`lapinbeam.registry`),
+  tanto locales como entre nodos — sin cambios en el protocolo de red en
+  ninguno de los dos casos.
 
 ## Seguridad
 

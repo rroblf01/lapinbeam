@@ -1,8 +1,11 @@
 """The hub node: connects out to every worker, spawns a `Watcher` actor
-under a *nested* supervision tree (`spawn_supervisor`), links it to each
-worker's `task_worker` (cross-node `lapinbeam.links`), and polls the
-cluster-wide "workers" group (cross-node `lapinbeam.groups`) — all three
-new primitives, exercised across real containers, with zero wire protocol
+under a *nested* supervision tree (`spawn_supervisor`), links AND monitors
+each worker's `task_worker` (cross-node `lapinbeam.links` and
+`lapinbeam.monitors`, side by side, so the logs show both an `Exit` and a
+`Down` for the same crash), polls the cluster-wide "workers" group
+(cross-node `lapinbeam.groups`), and looks up the cluster-wide
+"task_worker_primary" name (cross-node `lapinbeam.registry`) — five new
+primitives, exercised across real containers, with zero wire protocol
 changes.
 """
 
@@ -10,16 +13,21 @@ import asyncio
 import os
 
 from lapinbeam import (
+    Down,
     Exit,
     Node,
     Supervisor,
     actor,
+    link,
     members,
+    monitor,
     on,
     register_groups,
     register_links,
-    link,
+    register_monitors,
+    register_registry,
     trap_exit,
+    whereis_name,
 )
 
 NODE_NAME = os.environ["NODE_NAME"]
@@ -34,7 +42,11 @@ class Watcher:
 
     @on(Exit)
     async def on_exit(self, msg):
-        print(f"[hub] EXIT recibido: {msg.actor!r} salió con motivo {msg.reason!r}", flush=True)
+        print(f"[hub] EXIT recibido (link): {msg.actor!r} salió con motivo {msg.reason!r}", flush=True)
+
+    @on(Down)
+    async def on_down(self, msg):
+        print(f"[hub] DOWN recibido (monitor): {msg.actor!r} salió con motivo {msg.reason!r}", flush=True)
 
     @on(default=True)
     async def on_setup(self, msg):
@@ -42,7 +54,8 @@ class Watcher:
         for peer_id in self.worker_ids:
             other = self.node.get_remote_actor(peer_id, "task_worker")
             await link(other)
-            print(f"[hub] enlazado (link) a task_worker en {peer_id}", flush=True)
+            await monitor(other)
+            print(f"[hub] enlazado (link) y monitorizado (monitor) task_worker en {peer_id}", flush=True)
 
 
 async def main():
@@ -50,7 +63,9 @@ async def main():
     await node.start()
     sup = Supervisor(node=node)
     register_links(node, sup)
+    register_monitors(node, sup)
     register_groups(node, sup)
+    register_registry(node, sup)
 
     for worker in WORKERS:
         for _ in range(30):
@@ -84,6 +99,13 @@ async def main():
             for m in found
         )
         print(f"[hub] miembros actuales de 'workers': {labels}", flush=True)
+        primary = whereis_name(node, "task_worker_primary")
+        label = (
+            None if primary is None
+            else f"{primary.peer_id}/{primary.actor_name}" if hasattr(primary, "peer_id")
+            else f"{node.local_id}/{primary.name}"
+        )
+        print(f"[hub] whereis_name('task_worker_primary'): {label}", flush=True)
 
 
 if __name__ == "__main__":

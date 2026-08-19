@@ -82,7 +82,7 @@ any process/resource isolation it needs, lives entirely on the worker side:
 
 ```python
 from mcp.server.mcpserver import MCPServer
-from lapinbeam import Node
+from lapinbeam import Node, RemoteRef
 
 mcp = MCPServer("sandbox-gateway")
 node = Node("gateway@10.0.0.1:9100")
@@ -92,8 +92,8 @@ SANDBOX_PEER = "sandbox@10.0.0.5:9101"
 @mcp.tool()
 async def run_code(code: str, language: str) -> dict:
     """Runs `code` in an isolated sandbox; returns stdout/stderr/exit_code."""
-    remote = node.get_remote_actor(SANDBOX_PEER, "sandbox")
-    result = await remote.ask(RunCodeInput(code=code, language=language), timeout=10.0)
+    remote: RemoteRef = node.get_remote_actor(SANDBOX_PEER, "sandbox")
+    result: RunCodeResult = await remote.ask(RunCodeInput(code=code, language=language), timeout=10.0)
     return result.model_dump()
 
 
@@ -132,7 +132,7 @@ sequenceDiagram
 ```python
 import asyncio
 from pydantic import BaseModel
-from lapinbeam import Node, Supervisor, actor, current_message
+from lapinbeam import ActorRef, Node, Supervisor, actor, current_message
 
 
 class Question(BaseModel):
@@ -162,15 +162,15 @@ class CodeExpert:
 async def main():
     async with Node("experts@127.0.0.1:0") as node:
         sup = Supervisor(node=node)
-        research_ref = sup.spawn(ResearchExpert)
-        code_ref = sup.spawn(CodeExpert)
+        research_ref: ActorRef = sup.spawn(ResearchExpert)
+        code_ref: ActorRef = sup.spawn(CodeExpert)
 
         question = Question(text="Why is my recursive function stack-overflowing?")
-        opinions = await asyncio.gather(
+        opinions: list[Opinion] = await asyncio.gather(
             research_ref.ask(question, timeout=5.0),
             code_ref.ask(question, timeout=5.0),
         )
-        best = max(opinions, key=lambda o: o.confidence)
+        best: Opinion = max(opinions, key=lambda o: o.confidence)
         print(f"Going with {best.expert}: {best.answer}")
 ```
 

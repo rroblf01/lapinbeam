@@ -30,7 +30,7 @@ Nothing is installed system-wide: everything lives in `.venv`.
 
 ```python
 import asyncio
-from lapinbeam import Node, Supervisor, actor
+from lapinbeam import ActorRef, Node, Supervisor, actor
 
 
 @actor(name="echo")
@@ -44,7 +44,7 @@ async def main():
     await node.start()
 
     sup = Supervisor(strategy="one_for_one", node=node)
-    echo = sup.spawn(Echo)
+    echo: ActorRef = sup.spawn(Echo)
 
     await echo.send({"hello": "world"})
     await asyncio.sleep(0.1)  # let the mailbox drain before stopping
@@ -108,7 +108,7 @@ same `Processor` code reusable no matter who calls it.
     ```python
     import asyncio
     import os
-    from lapinbeam import Node, Supervisor, actor
+    from lapinbeam import Node, RemoteRef, Supervisor, actor
 
 
     # This actor exists only on server A. Its job is to receive the ACK
@@ -130,7 +130,7 @@ same `Processor` code reusable no matter who calls it.
         sup.spawn(Ingestor)                                # register the actor that will receive ACKs
 
         await node.connect_peer(peer)                      # dial server B and wait for the TCP handshake
-        remote = node.get_remote_actor(peer, "processor")  # a handle to B's "processor" actor
+        remote: RemoteRef = node.get_remote_actor(peer, "processor")  # a handle to B's "processor" actor
         for i in range(100):
             # Every send() here actually crosses the network to server B.
             await remote.send({"type": "TASK", "payload_id": i, "reply_to": "ingestor"})
@@ -145,7 +145,7 @@ same `Processor` code reusable no matter who calls it.
     ```python
     import asyncio
     import os
-    from lapinbeam import Node, Supervisor, actor
+    from lapinbeam import Node, RemoteRef, Supervisor, actor
 
 
     # This actor exists only on server B. It receives TASK messages sent
@@ -166,7 +166,7 @@ same `Processor` code reusable no matter who calls it.
                 # get_remote_actor() does NOT open a new connection — it
                 # just builds a reference that reuses the one TCP
                 # connection already established between the two servers.
-                remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
+                remote: RemoteRef = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
                 await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
 
 
@@ -196,12 +196,12 @@ rather find that out from the message itself instead of relying on a
 constructor argument, `lapinbeam.current_message()` returns it directly:
 
 ```python
-from lapinbeam import current_message
+from lapinbeam import MessageMeta, RemoteRef, current_message
 
 async def receive(self, msg):
     if msg.get("type") == "TASK":
-        meta = current_message()  # who sent this, and to what?
-        remote = self.node.get_remote_actor(meta.src, meta.reply_to)
+        meta: MessageMeta | None = current_message()  # who sent this, and to what?
+        remote: RemoteRef = self.node.get_remote_actor(meta.src, meta.reply_to)
         await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
 ```
 
@@ -236,7 +236,7 @@ it tags the send with a fresh `correlation_id`, waits for a single reply,
 and works the same on `ActorRef` and `RemoteRef`:
 
 ```python
-reply = await remote_processor.ask({"type": "TASK", "payload_id": 1})
+reply: dict = await remote_processor.ask({"type": "TASK", "payload_id": 1})
 ```
 
 The receiving handler still has to actually reply — `ask()` doesn't change
@@ -276,7 +276,7 @@ but you rarely want to fly blind about connection state or delivery errors in
 a long-running process — subscribe to system events:
 
 ```python
-def on_event(event):
+def on_event(event: dict) -> None:
     if event["kind"] == "peer_disconnected":
         print("lost peer:", event["peer"])
     elif event["kind"] == "error":

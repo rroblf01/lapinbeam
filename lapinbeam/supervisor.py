@@ -272,7 +272,9 @@ class Supervisor:
                 # lapinbeam.links) — always cleared now; only notified
                 # below if this generation isn't coming back.
                 linked = self.node._clear_links(child.name)
+                monitored = self.node._clear_monitors(child.name)
                 self.node._clear_groups(child.name)
+                self.node._clear_registry(child.name)
                 if child.pending_exit is not None:
                     # A link-triggered kill (see lapinbeam.links), not a
                     # real shutdown — route it through the normal
@@ -282,15 +284,20 @@ class Supervisor:
                     exc, child.pending_exit = child.pending_exit, None
                     if await self._handle_child_crash(child, exc):
                         continue
-                    self.node._notify_links(child.name, linked, f"{type(exc).__name__}: {exc}")
+                    reason = f"{type(exc).__name__}: {exc}"
+                    self.node._notify_links(child.name, linked, reason)
+                    self.node._notify_monitors(child.name, monitored, reason)
                     raise exc
                 self.node._notify_links(child.name, linked, "shutdown")
+                self.node._notify_monitors(child.name, monitored, "shutdown")
                 raise
             except Exception as exc:
                 self.node.unregister_actor(child.name)
                 self.node._live_children.pop(child.name, None)
                 linked = self.node._clear_links(child.name)
+                monitored = self.node._clear_monitors(child.name)
                 self.node._clear_groups(child.name)
+                self.node._clear_registry(child.name)
                 # `mailbox` is deliberately never replaced here: the
                 # message that caused this crash is already gone
                 # (dequeued before the handler ran), but any messages
@@ -298,14 +305,19 @@ class Supervisor:
                 # when the crash happened — must survive the restart.
                 if await self._handle_child_crash(child, exc):
                     continue
-                self.node._notify_links(child.name, linked, f"{type(exc).__name__}: {exc}")
+                reason = f"{type(exc).__name__}: {exc}"
+                self.node._notify_links(child.name, linked, reason)
+                self.node._notify_monitors(child.name, monitored, reason)
                 raise
             else:
                 self.node.unregister_actor(child.name)
                 self.node._live_children.pop(child.name, None)
                 linked = self.node._clear_links(child.name)
+                monitored = self.node._clear_monitors(child.name)
                 self.node._clear_groups(child.name)
+                self.node._clear_registry(child.name)
                 self.node._notify_links(child.name, linked, "normal")
+                self.node._notify_monitors(child.name, monitored, "normal")
                 self._discard_child(child)
                 return
 

@@ -30,7 +30,7 @@ No se instala nada a nivel de sistema: todo vive en `.venv`.
 
 ```python
 import asyncio
-from lapinbeam import Node, Supervisor, actor
+from lapinbeam import ActorRef, Node, Supervisor, actor
 
 
 @actor(name="echo")
@@ -44,7 +44,7 @@ async def main():
     await node.start()
 
     sup = Supervisor(strategy="one_for_one", node=node)
-    echo = sup.spawn(Echo)
+    echo: ActorRef = sup.spawn(Echo)
 
     await echo.send({"hello": "world"})
     await asyncio.sleep(0.1)  # deja que la mailbox se vacíe antes de parar
@@ -111,7 +111,7 @@ sin importar quién lo llame.
     ```python
     import asyncio
     import os
-    from lapinbeam import Node, Supervisor, actor
+    from lapinbeam import Node, RemoteRef, Supervisor, actor
 
 
     # Este actor existe solo en el servidor A. Su trabajo es recibir el
@@ -133,7 +133,7 @@ sin importar quién lo llame.
         sup.spawn(Ingestor)                                # registra el actor que recibirá los ACK
 
         await node.connect_peer(peer)                      # marca al servidor B y espera el handshake TCP
-        remote = node.get_remote_actor(peer, "processor")  # una referencia al actor "processor" de B
+        remote: RemoteRef = node.get_remote_actor(peer, "processor")  # una referencia al actor "processor" de B
         for i in range(100):
             # Cada send() de aquí cruza de verdad la red hasta el servidor B.
             await remote.send({"type": "TASK", "payload_id": i, "reply_to": "ingestor"})
@@ -148,7 +148,7 @@ sin importar quién lo llame.
     ```python
     import asyncio
     import os
-    from lapinbeam import Node, Supervisor, actor
+    from lapinbeam import Node, RemoteRef, Supervisor, actor
 
 
     # Este actor existe solo en el servidor B. Recibe los mensajes TASK
@@ -171,7 +171,7 @@ sin importar quién lo llame.
                 # get_remote_actor() NO abre una conexión nueva — solo
                 # construye una referencia que reutiliza la única
                 # conexión TCP ya establecida entre los dos servidores.
-                remote = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
+                remote: RemoteRef = self.node.get_remote_actor(self.peer_id, msg["reply_to"])
                 await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
 
 
@@ -202,12 +202,12 @@ argumento del constructor, `lapinbeam.current_message()` lo devuelve
 directamente:
 
 ```python
-from lapinbeam import current_message
+from lapinbeam import MessageMeta, RemoteRef, current_message
 
 async def receive(self, msg):
     if msg.get("type") == "TASK":
-        meta = current_message()  # ¿quién envió esto, y a quién responder?
-        remote = self.node.get_remote_actor(meta.src, meta.reply_to)
+        meta: MessageMeta | None = current_message()  # ¿quién envió esto, y a quién responder?
+        remote: RemoteRef = self.node.get_remote_actor(meta.src, meta.reply_to)
         await remote.send({"type": "ACK", "payload_id": msg["payload_id"]})
 ```
 
@@ -243,7 +243,7 @@ justo eso: etiqueta el envío con un `correlation_id` nuevo, espera una
 única respuesta, y funciona igual en `ActorRef` y en `RemoteRef`:
 
 ```python
-respuesta = await remote_processor.ask({"type": "TASK", "payload_id": 1})
+respuesta: dict = await remote_processor.ask({"type": "TASK", "payload_id": 1})
 ```
 
 El handler que recibe el mensaje sigue teniendo que responder de verdad —
@@ -284,7 +284,7 @@ o los errores de entrega en un proceso de larga duración — suscríbete a los
 eventos de sistema:
 
 ```python
-def on_event(event):
+def on_event(event: dict) -> None:
     if event["kind"] == "peer_disconnected":
         print("peer perdido:", event["peer"])
     elif event["kind"] == "error":

@@ -1,25 +1,40 @@
 """A worker node: starts, joins the cluster-wide "workers" group, and
-waits for the hub to dial in and link to its `task_worker` actor. Once
-linked, it processes a few tasks and then deliberately fails for good —
-demonstrating a cross-node `lapinbeam.links` exit signal delivered to the
-hub, and cross-node `lapinbeam.groups` membership dropping, across a real
-TCP connection between two containers, with zero wire protocol changes.
+waits for the hub to dial in and link + monitor its `task_worker` actor.
+Once set up, it processes a few tasks and then deliberately fails for
+good — demonstrating a cross-node `lapinbeam.links` `Exit` *and* a
+cross-node `lapinbeam.monitors` `Down` delivered to the hub for the same
+crash, cross-node `lapinbeam.groups` membership dropping, and (on the
+worker started with `PRIMARY=1`) a cross-node `lapinbeam.registry` name
+being released, all across real TCP connections between containers, with
+zero wire protocol changes.
 
 `max_restarts=0` on purpose: the very first crash is the final one, so
-there's no intermediate in-place restart to clear the link the hub
-registered (see `lapinbeam/links.py`'s module docstring on the pid-scoped,
-restart-clears-links behavior — this keeps the demo to the common,
-unambiguous case; `tests-python/test_links.py` covers the restart-doesn't-
-propagate case directly).
+there's no intermediate in-place restart to clear the link/monitor the
+hub registered (see `lapinbeam/links.py`'s module docstring on the
+pid-scoped, restart-clears-links behavior, which `lapinbeam/monitors.py`
+mirrors — this keeps the demo to the common, unambiguous case;
+`tests-python/test_links.py`/`test_monitors.py` cover the
+restart-doesn't-propagate case directly).
 """
 
 import asyncio
 import os
 
-from lapinbeam import Node, Supervisor, actor, join_group, register_groups, register_links
+from lapinbeam import (
+    Node,
+    Supervisor,
+    actor,
+    join_group,
+    register_groups,
+    register_links,
+    register_monitors,
+    register_registry,
+    register_name,
+)
 
 NODE_NAME = os.environ["NODE_NAME"]
 CRASH_AFTER = int(os.environ.get("CRASH_AFTER", "3"))
+PRIMARY = os.environ.get("PRIMARY") == "1"
 
 
 @actor(name="task_worker")
@@ -32,6 +47,9 @@ class TaskWorker:
         if self.count == 0:
             await join_group(self.node, "workers")
             print(f"[{self.node.local_id}] unido al grupo 'workers'", flush=True)
+            if PRIMARY:
+                await register_name(self.node, "task_worker_primary")
+                print(f"[{self.node.local_id}] registrado como 'task_worker_primary'", flush=True)
         self.count += 1
         print(f"[{self.node.local_id}] procesando tarea #{self.count}", flush=True)
         if self.count > CRASH_AFTER:
@@ -43,7 +61,9 @@ async def main():
     await node.start()
     sup = Supervisor(node=node, max_restarts=0)
     register_links(node, sup)
+    register_monitors(node, sup)
     register_groups(node, sup)
+    register_registry(node, sup)
 
     ref = sup.spawn(TaskWorker, node)
     print(f"[{node.local_id}] task_worker listo, esperando a que el hub se conecte", flush=True)

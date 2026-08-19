@@ -5,6 +5,7 @@ services:
     environment:
       - NODE_NAME=worker1@worker1:9101
       - CRASH_AFTER=3
+      - PRIMARY=1
     networks:
       - cluster-net
     # NODE_NAME's host is also the interface the listener binds to, so the

@@ -135,7 +135,7 @@ from lapinbeam import Node, Supervisor, register_discovery, join_via_seeds
 node = Node("app@app:9001")
 await node.start()
 register_discovery(node, Supervisor(node=node))
-await join_via_seeds(node, seeds=["seed@seed:9000"])
+found: set[str] = await join_via_seeds(node, seeds=["seed@seed:9000"])
 ```
 
 `examples/seed_discovery/` runs this across four containers — one seed and
@@ -147,49 +147,64 @@ cd examples/seed_discovery
 docker compose up --build
 ```
 
-## Supervision trees, links, and groups across real nodes
+## Supervision trees, links, monitors, groups, and a name registry across real nodes
 
 `Supervisor.spawn_supervisor()` (nested supervision trees), `lapinbeam.links`
-(bidirectional links) and `lapinbeam.groups` (cluster-wide process groups)
-all work the same locally or across nodes, with no wire protocol changes
-for either — cross-node traffic for both rides as ordinary `Data` frames to
-a reserved local actor name, the same trick `lapinbeam.discovery` already
-uses:
+(bidirectional links), `lapinbeam.monitors` (one-way, non-lethal monitors),
+`lapinbeam.groups` (cluster-wide process groups), and `lapinbeam.registry`
+(cluster-wide unique name registration) all work the same locally or across
+nodes, with no wire protocol changes for any of them — cross-node traffic for
+all five rides as ordinary `Data` frames to a reserved local actor name, the
+same trick `lapinbeam.discovery` already uses:
 
 ```python
 from lapinbeam import (
-    Exit, Node, Supervisor, actor, on,
+    ActorRef, Down, Exit, Node, RemoteRef, Supervisor, actor, on,
     link, trap_exit, register_links,
+    monitor, register_monitors,
     join_group, members, register_groups,
+    register_name, whereis_name, register_registry,
 )
 
 node = Node("app@app:9100")
 await node.start()
 sup = Supervisor(node=node)
 register_links(node, sup)
+register_monitors(node, sup)
 register_groups(node, sup)
+register_registry(node, sup)
 
 
 @actor(name="watcher")
 class Watcher:
     @on(Exit)
-    async def on_exit(self, msg):
+    async def on_exit(self, msg: Exit):
         print("linked actor exited:", msg.actor, msg.reason)
 
+    @on(Down)
+    async def on_down(self, msg: Down):
+        print("monitored actor exited:", msg.actor, msg.reason)
 
-ref = sup.spawn(Watcher)
+
+ref: ActorRef = sup.spawn(Watcher)
 await node.connect_peer("worker@worker:9101")
-other = node.get_remote_actor("worker@worker:9101", "task_worker")
+other: RemoteRef = node.get_remote_actor("worker@worker:9101", "task_worker")
 # trap_exit() must run from inside the actor — e.g. its first handler call.
-await link(other)          # cross-node link, no core changes
+await link(other)                       # cross-node link (kills/traps on exit), no core changes
+monitor_ref: str = await monitor(other)  # cross-node monitor (never kills, never gets killed)
 await join_group(node, "watchers", ref=ref)   # cluster-wide group membership
-print(members(node, "watchers"))              # -> [ActorRef/RemoteRef, ...]
+found: list[ActorRef | RemoteRef] = members(node, "watchers")
+print(found)                                  # -> [ActorRef/RemoteRef, ...]
+await register_name(node, "leader", ref=ref)  # cluster-wide unique name
+owner: ActorRef | RemoteRef | None = whereis_name(node, "leader")
+print(owner)                                  # -> ActorRef/RemoteRef or None
 ```
 
-`examples/cluster_supervision/` runs all three across three real
-containers — a `hub` with a nested supervision tree that links to two
-workers and watches a cluster-wide `"workers"` group as each one fails for
-good:
+`examples/cluster_supervision/` runs all five across three real
+containers — a `hub` with a nested supervision tree that links **and**
+monitors two workers (so the same crash delivers both an `Exit` and a
+`Down`) and watches a cluster-wide `"workers"` group and a
+`"task_worker_primary"` registered name as each worker fails for good:
 
 ```bash
 cd examples/cluster_supervision
@@ -205,7 +220,7 @@ before giving up and re-raising:
 
 ```python
 import asyncio
-from lapinbeam import Node, Supervisor, actor
+from lapinbeam import ActorRef, Node, Supervisor, actor
 
 # Kept outside the actor on purpose — see the note below.
 attempts = {"n": 0}
@@ -224,7 +239,7 @@ async def main():
     async with Node("app@127.0.0.1:0") as node:
         sup = Supervisor(strategy="one_for_one", node=node,
                           max_restarts=5, restart_window=10.0)
-        ref = sup.spawn(Flaky)
+        ref: ActorRef = sup.spawn(Flaky)
         for _ in range(3):
             await ref.send({})
             # Give the restart (with backoff) time to finish before the next

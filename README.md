@@ -35,9 +35,13 @@ version bump. This hasn't been run at production scale yet — see
   a node needs one already-running node's address, not every node's.
 - Nested supervision trees: `Supervisor.spawn_supervisor()` lets a
   `Supervisor` supervise another `Supervisor`.
-- Bidirectional links (`link`/`unlink`/`trap_exit`) and cluster-wide named
-  process groups (`join_group`/`leave_group`/`members`), local and
-  cross-node, with no wire protocol changes for either.
+- Bidirectional links (`link`/`unlink`/`trap_exit`) and one-way, non-lethal
+  monitors (`monitor`/`demonitor`), local and cross-node, with no wire
+  protocol changes for either.
+- Cluster-wide named process groups (`join_group`/`leave_group`/`members`)
+  and cluster-wide unique name registration (`register_name`/
+  `unregister_name`/`whereis_name`), local and cross-node, with no wire
+  protocol changes for either.
 
 ## Install
 

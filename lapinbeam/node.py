@@ -96,6 +96,19 @@ class Node:
         # reasoning as `_deliver_exit`'s local import of `.links`.
         self._groups = {}
         self._group_leave_hook = None
+        # lapinbeam.monitors state — likewise cheap to keep unused.
+        # `_monitors`: ref -> (watcher_name, peer_id, target_name), owned
+        # by the watcher's own node (peer_id is None for a local target).
+        # `_monitor_watchers`: local target name -> {ref: (watcher_node,
+        # watcher_name)}, owned by the *target's* node — this is the side
+        # that decides when to fire a `Down`.
+        self._monitors = {}
+        self._monitor_watchers = {}
+        # lapinbeam.registry state — likewise cheap to keep unused.
+        # `_registry`: name -> (origin_node_id, actor_name), one owner per
+        # name, converged the same way `_groups` is (delta + snapshot).
+        self._registry = {}
+        self._registry_release_hook = None
 
     @staticmethod
     def _build_id(node_name, listen_port):
@@ -214,6 +227,11 @@ class Node:
           `Node` was created with `mailbox_capacity` set — unbounded by
           default). If the dropped message came from a peer, that peer
           separately gets an `"error"` event for the same drop.
+        - `"registry_conflict"` — only fires if `lapinbeam.registry` is in
+          use: this node saw two different claims to the same
+          `event["name"]` (`event["existing"]` kept, `event["incoming"]`
+          rejected) — see `lapinbeam.registry`'s module docstring for why
+          this can happen and what it doesn't guarantee.
 
         Without a registered handler these are otherwise invisible —
         message delivery is fire-and-forget.
@@ -243,6 +261,18 @@ class Node:
                     asyncio.create_task(
                         self._deliver_exit(f"{target[0]}/{target[1]}", name, "noconnection")
                     )
+            # Symmetric cascade for monitors: any local actor watching one
+            # on the peer that just dropped off the network gets a `Down`
+            # with reason "noconnection", same as links' "noconnection".
+            for target_name, watchers in list(self._monitor_watchers.items()):
+                gone_refs = [
+                    ref for ref, (watcher_node, _n) in watchers.items() if watcher_node == peer
+                ]
+                for ref in gone_refs:
+                    watchers.pop(ref, None)
+            for ref, (_watcher_name, peer_id, name) in list(self._monitors.items()):
+                if peer_id == peer:
+                    asyncio.create_task(self._deliver_down(ref, f"{peer_id}/{name}", "noconnection"))
         for callback in list(self._event_listeners):
             try:
                 callback(event)
@@ -464,6 +494,71 @@ class Node:
             })
         except Exception:
             pass  # best-effort, same as any other fire-and-forget notification
+
+    async def _deliver_down(self, ref, actor_label, reason):
+        """Delivers a `lapinbeam.monitors` `Down` signal for `ref` — looks
+        up (and forgets) the watcher `monitor()` recorded for it on *this*
+        node, and delivers an ordinary message. A no-op if the watcher
+        already doesn't exist (already died, or the ref was never ours)."""
+        from .monitors import Down
+
+        entry = self._monitors.pop(ref, None)
+        if entry is None:
+            return
+        watcher_name = entry[0]
+        if watcher_name in self._mailboxes:
+            await self._send_local(watcher_name, Down(ref=ref, actor=actor_label, reason=reason))
+
+    def _clear_monitors(self, name):
+        """Called by `Supervisor._run_actor_child` every time a monitored
+        actor's current generation ends, whether restarting or gone for
+        good — same pid-scoping rationale as `_clear_links`. Returns the
+        watchers to notify (`{ref: (watcher_node, watcher_name)}`) if (and
+        only if) this generation isn't coming back."""
+        return self._monitor_watchers.pop(name, None)
+
+    def _notify_monitors(self, actor_name, watchers, reason):
+        """Tells every watcher of `actor_name` (captured via
+        `_clear_monitors`) that it has exited for good."""
+        if not watchers:
+            return
+        for ref, (watcher_node, watcher_name) in watchers.items():
+            if watcher_node is None:
+                asyncio.create_task(self._deliver_down(ref, actor_name, reason))
+            else:
+                asyncio.create_task(
+                    self._notify_remote_down(watcher_node, ref, actor_name, reason)
+                )
+
+    async def _notify_remote_down(self, peer_id, ref, actor_name, reason):
+        from .monitors import MONITOR_ACTOR
+
+        remote = self.get_remote_actor(peer_id, MONITOR_ACTOR)
+        try:
+            await remote.send({
+                "op": "down", "ref": ref, "actor": actor_name,
+                "reason": reason, "from_node": self.local_id,
+            })
+        except Exception:
+            pass  # best-effort, same as any other fire-and-forget notification
+
+    def _clear_registry(self, name):
+        """Called by `Supervisor._run_actor_child` every time an actor's
+        current generation ends, restarting or not — unlike links, a
+        registry release is unconditional (same rationale as
+        `_clear_groups`): a name is pid-scoped, so even a within-budget
+        restart means this generation no longer owns it. A fresh
+        generation that wants to keep the name calls `register_name()`
+        again, typically from its first message handler."""
+        released = [
+            name_ for name_, (origin, actor_name) in self._registry.items()
+            if origin == self.local_id and actor_name == name
+        ]
+        for name_ in released:
+            del self._registry[name_]
+            if self._registry_release_hook is not None:
+                self._registry_release_hook(name_, name)
+        return released
 
     def __repr__(self):
         return f"<Node {self.local_id!r}>"
