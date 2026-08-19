@@ -25,9 +25,15 @@ of `1.0.0`, a breaking change requires a major version bump.
   caught internally and reported via `on_event(kind="pool_worker_error")`
   instead of crashing the worker — nothing ever sends a pool worker a
   second message on its own mailbox, so a crashed worker would never
-  restart itself the way a normal actor does. See
+  restart itself the way a normal actor does. `handler` may also be an
+  `@actor`-decorated class instead of a plain function: `spawn_pool()`
+  then builds one instance per worker (`args`/`kwargs` go to its
+  constructor, like `spawn()`) and dispatches each message through that
+  instance's own `@on` handlers (or `receive`), giving workers real
+  per-instance state across messages instead of the stateless-function
+  form. See
   [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
-  for when a pool is (and isn't) the right tool.
+  for when a pool — and which handler shape — is the right tool.
 - **`ActorRef.ask_stream()` / `RemoteRef.ask_stream()`**, plus
   `MessageMeta.reply_stream()`/`reply_final()`: a streaming counterpart to
   `ask()`, for a handler that needs to report *progress*, not just a

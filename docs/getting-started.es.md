@@ -143,20 +143,61 @@ worker — se captura internamente y se reporta vía
 `on_event(kind="pool_worker_error")`, y ese worker sigue con el siguiente
 mensaje de la cola.
 
+`process` de arriba es una función suelta, así que los workers no guardan
+estado entre llamadas. Si cada worker debe mantener su propio estado
+entre los mensajes que le vayan tocando (una caché, un contador, una
+conexión), pasa una clase `@actor` en su lugar — `spawn_pool()` crea una
+instancia por worker (`args`/`kwargs` van a su constructor, igual que en
+`spawn()`) y despacha cada mensaje a través de los handlers `@on` de esa
+instancia, o a `receive` si no define ningún `@on`:
+
+```python
+from lapinbeam import PoolRef, actor
+
+
+@actor(name="processor")
+class Processor:
+    def __init__(self):
+        self.procesados = 0
+
+    async def receive(self, msg):
+        await asyncio.sleep(1)
+        self.procesados += 1
+        print("terminado con", msg["id"], "— este worker lleva", self.procesados)
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)
+        pool: PoolRef = await sup.spawn_pool(Processor, 5, name="processors")
+        for i in range(5):
+            await pool.send({"id": i})
+        await asyncio.sleep(2)
+```
+
+Misma cola, misma concurrencia, mismo salvavidas
+`on_event(kind="pool_worker_error")` — pero ahora cada una de las 5
+instancias de `Processor` mantiene `procesados` a lo largo de todos los
+mensajes que *esa instancia* llegue a procesar. Ese salvavidas importa más
+aquí que con una función: si un handler lanza una excepción, la *misma*
+instancia sigue funcionando después, así que cualquier estado de `self` a
+medio actualizar se queda a medio actualizar para el siguiente mensaje que
+le toque a ese worker (a diferencia de un actor `spawn()`eado, cuyo
+reinicio siempre parte de una instancia nueva).
+
 **Cuándo usar `spawn_pool()`**: llegan más elementos de trabajo de los
 que un solo actor podría procesar, pero cada uno es lo bastante barato (o
 I/O-bound — ver el aviso de abajo) como para que unos pocos workers den
-abasto, y no te importa *cuál* de ellos procese cada elemento. **Cuándo
-no**: si los workers necesitan estado propio entre mensajes (los workers
-de `spawn_pool()` no guardan estado entre llamadas — todo lo que un
-`process()` necesita llega por `msg`/los `*args`/`**kwargs` compartidos,
-no por `self`), o si importa que "el mismo tipo de mensaje siempre caiga
-en el mismo worker" (p.ej. orden por clave) — para eso, vuelve a N
-`sup.spawn()` sueltos y reparte tú mismo con `hash(clave) % n_workers`. Y
-si necesitas esperar *varias* respuestas independientes a la vez en vez
-de que un pool responda a un único `ask()`, la herramienta es
-`asyncio.gather()` sobre varios `ask()` (con pool o sin él) — ver el
-patrón de mixture-of-experts en [Agentes de IA y MCP](ai-agents.es.md).
+abasto, y no te importa *cuál* de ellos procese cada elemento — usa la
+forma función para trabajo sin estado, y la forma clase cuando los workers
+deban mantener estado entre mensajes. **Cuándo no**: si importa que "el
+mismo tipo de mensaje siempre caiga en el mismo worker" (p.ej. orden por
+clave) — para eso, vuelve a N `sup.spawn()` sueltos y reparte tú mismo con
+`hash(clave) % n_workers`. Y si necesitas esperar *varias* respuestas
+independientes a la vez en vez de que un pool responda a un único
+`ask()`, la herramienta es `asyncio.gather()` sobre varios `ask()` (con
+pool o sin él) — ver el patrón de mixture-of-experts en
+[Agentes de IA y MCP](ai-agents.es.md).
 
 !!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound"
     Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,

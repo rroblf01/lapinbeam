@@ -130,24 +130,43 @@ class Supervisor:
         `PoolRef`. Async, unlike `spawn()`: each worker needs one real
         message to start its loop, and that has to be awaited.
 
-        `handler(msg, *args, **kwargs)` runs once per message `pool.send()`
-        (or a remote `get_remote_actor(peer, pool.name).send()`) delivers —
-        `args`/`kwargs` are the same for every worker and every message
-        (e.g. a shared `node` reference), not per-worker state. Inside
-        `handler`, `current_message()`/`current_message().reply()` and
-        `ask()`/`ask_stream()` sent to the pool all work exactly as they
-        would in an ordinary `spawn()`ed actor — the dispatcher captures
-        each message's metadata (`reply_to`, `correlation_id`, ...) and the
-        worker re-binds it for the duration of that one `handler()` call,
-        even though many calls share the worker's single `receive()`
-        invocation.
+        `handler` is either a plain async function or an `@actor`-decorated
+        class:
 
-        A `handler` that raises is caught here, not left to crash the
+        - **Function**: `handler(msg, *args, **kwargs)` runs once per
+          message `pool.send()` delivers. `args`/`kwargs` are the same for
+          every worker and every message (e.g. a shared `node` reference)
+          — workers are stateless between calls, nothing is kept on `self`
+          because there is no `self`.
+        - **`@actor` class**: each of the `n_workers` gets its own
+          instance, built once via `handler(*args, **kwargs)` — here
+          `args`/`kwargs` go to the constructor, exactly like `spawn()`.
+          Each message is dispatched through that instance's own `@on`
+          handlers (or `receive`, if it defines no `@on` at all), so a
+          worker can keep real per-instance state (a cache, a counter, a
+          connection) across the messages it happens to pick up. Which
+          worker gets which message is still not deterministic — don't
+          rely on message *order* landing on any particular instance.
+
+        Either way, inside the handler, `current_message()`/
+        `current_message().reply()` and `ask()`/`ask_stream()` sent to the
+        pool all work exactly as they would in an ordinary `spawn()`ed
+        actor — the dispatcher captures each message's metadata
+        (`reply_to`, `correlation_id`, ...) and the worker re-binds it for
+        the duration of that one dispatch, even though many dispatches
+        share the worker's single `receive()` invocation.
+
+        A handler that raises is caught here, not left to crash the
         worker: nothing ever sends a pool worker a second message on its
         own mailbox, so a crashed worker would never restart on its own
         the way an ordinary `spawn()`ed actor does — the exception is
         reported via `on_event(kind="pool_worker_error")` instead, and the
-        worker moves on to the next queued message.
+        worker moves on to the next queued message. For a class `handler`
+        this means the *same* instance keeps running afterward — if the
+        exception left `self` in a half-updated state, that state stays
+        half-updated for whichever message that worker picks up next
+        (unlike a `spawn()`ed actor's crash, which gets a fresh instance
+        on restart).
 
         Use this instead of `n_workers` separate `spawn()` calls when work
         items arrive faster than one actor could get through them, but the
@@ -160,6 +179,7 @@ class Supervisor:
         """
         node = self.node
         queue = asyncio.Queue()
+        is_actor_cls = inspect.isclass(handler) and hasattr(handler, "__lapinbeam_actor__")
 
         @actor(name=name)
         class _Dispatcher:
@@ -172,15 +192,36 @@ class Supervisor:
                 # moved on to other messages.
                 queue.put_nowait((msg, current_message_var.get()))
 
+        async def _dispatch_to_instance(instance, item):
+            actor_meta = type(instance).__lapinbeam_actor__
+            handlers = actor_meta["handlers"]
+            default_handler = actor_meta["default_handler"]
+            if not handlers:
+                await instance.receive(item)
+                return
+            handler_name = handlers.get(type(item), default_handler)
+            if handler_name is None:
+                raise TypeError(
+                    f"{type(instance).__name__} has no @on handler for "
+                    f"{type(item).__name__} messages and no @on(default=True) fallback"
+                )
+            await getattr(instance, handler_name)(item)
+
         def _build_worker(index):
             @actor(name=f"__{name}_worker_{index}__")
             class _Worker:
+                def __init__(self):
+                    self._instance = handler(*args, **kwargs) if is_actor_cls else None
+
                 async def receive(self, _msg):
                     while True:
                         item, meta = await queue.get()
                         token = current_message_var.set(meta)
                         try:
-                            await handler(item, *args, **kwargs)
+                            if is_actor_cls:
+                                await _dispatch_to_instance(self._instance, item)
+                            else:
+                                await handler(item, *args, **kwargs)
                         except Exception as exc:
                             node._on_core_event({
                                 "kind": "pool_worker_error",

@@ -1,8 +1,9 @@
 import asyncio
 import time
+from dataclasses import dataclass
 
 from helpers import wait_until
-from lapinbeam import Node, PoolRef, Supervisor
+from lapinbeam import Node, PoolRef, Supervisor, actor, on
 
 
 async def test_pool_processes_messages_concurrently():
@@ -125,5 +126,109 @@ async def test_pool_ask_is_answered_by_whichever_worker_picks_it_up():
         pool = await sup.spawn_pool(handler, 4, name="pool_ask")
         results = await asyncio.gather(*(pool.ask({"n": i}) for i in range(4)))
         assert sorted(results) == [0, 2, 4, 6]
+    finally:
+        await node.stop()
+
+
+async def test_pool_actor_class_constructor_receives_args_and_kwargs():
+    """For a class `handler`, `args`/`kwargs` go to the constructor once
+    per worker, mirroring `spawn(actor_cls, *args, **kwargs)` — not to
+    every message, unlike the function-handler case."""
+    from lapinbeam import current_message
+
+    @actor(name="seeded_worker")
+    class Seeded:
+        def __init__(self, start, step=1):
+            self.total = start
+            self.step = step
+
+        async def receive(self, _msg):
+            self.total += self.step
+            await current_message().reply(self.total)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(Seeded, 1, 100, name="pool_seeded", step=5)
+        assert await pool.ask({}) == 105
+        assert await pool.ask({}) == 110
+    finally:
+        await node.stop()
+
+
+async def test_pool_actor_class_dispatches_via_on_handlers():
+    from lapinbeam import current_message
+
+    @dataclass
+    class Add:
+        n: int
+
+    @dataclass
+    class Reset:
+        pass
+
+    @actor(name="typed_worker")
+    class Accumulator:
+        def __init__(self):
+            self.total = 0
+
+        @on(Add)
+        async def handle_add(self, msg):
+            self.total += msg.n
+            await current_message().reply(self.total)
+
+        @on(Reset)
+        async def handle_reset(self, _msg):
+            self.total = 0
+            await current_message().reply(self.total)
+
+    node = Node("node@127.0.0.1:0")
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(Accumulator, 1, name="pool_typed")  # 1 worker: same instance
+        assert await pool.ask(Add(2)) == 2
+        assert await pool.ask(Add(3)) == 5
+        assert await pool.ask(Reset()) == 0
+        assert await pool.ask(Add(1)) == 1
+    finally:
+        await node.stop()
+
+
+async def test_pool_actor_class_worker_survives_handler_exception_with_state_intact():
+    from lapinbeam import current_message
+
+    events = []
+
+    @dataclass
+    class Bump:
+        by: int
+        boom: bool = False
+
+    @actor(name="fragile_worker")
+    class Fragile:
+        def __init__(self):
+            self.total = 0
+
+        async def receive(self, msg):
+            if msg.boom:
+                raise RuntimeError("boom")
+            self.total += msg.by
+            await current_message().reply(self.total)
+
+    node = Node("node@127.0.0.1:0")
+    node.on_event(lambda e: events.append(e) if e["kind"] == "pool_worker_error" else None)
+    await node.start()
+    try:
+        sup = Supervisor(node=node)
+        pool = await sup.spawn_pool(Fragile, 1, name="pool_fragile")
+        assert await pool.ask(Bump(by=1)) == 1
+        await pool.send(Bump(by=0, boom=True))
+        await wait_until(lambda: len(events) == 1, timeout=2.0)
+        assert events[0]["pool"] == "pool_fragile"
+        # Same instance survives: state from before the crash is untouched,
+        # and it keeps accumulating afterward.
+        assert await pool.ask(Bump(by=2)) == 3
     finally:
         await node.stop()

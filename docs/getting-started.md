@@ -140,20 +140,58 @@ answering. A `process` that raises doesn't crash its worker — it's caught
 internally and reported via `on_event(kind="pool_worker_error")`, and
 that worker picks up the next queued message.
 
+`process` above is a plain function, so the workers are stateless between
+calls. If each worker should keep its own state across the messages it
+happens to pick up (a cache, a counter, a connection), pass an `@actor`
+class instead — `spawn_pool()` builds one instance per worker (`args`/
+`kwargs` go to its constructor, exactly like `spawn()`) and dispatches
+each message through that instance's own `@on` handlers, or `receive` if
+it defines no `@on` at all:
+
+```python
+from lapinbeam import PoolRef, actor
+
+
+@actor(name="processor")
+class Processor:
+    def __init__(self):
+        self.handled = 0
+
+    async def receive(self, msg):
+        await asyncio.sleep(1)
+        self.handled += 1
+        print("done with", msg["id"], "— this worker's handled", self.handled)
+
+
+async def main():
+    async with Node("app@127.0.0.1:0") as node:
+        sup = Supervisor(node=node)
+        pool: PoolRef = await sup.spawn_pool(Processor, 5, name="processors")
+        for i in range(5):
+            await pool.send({"id": i})
+        await asyncio.sleep(2)
+```
+
+Same queue, same concurrency, same `on_event(kind="pool_worker_error")`
+safety net — but now each of the 5 `Processor` instances keeps `handled`
+across every message *that instance* ends up processing. That safety net
+matters more here than with a function: if a handler raises, the *same*
+instance keeps running afterward, so any half-updated `self` state stays
+half-updated for the next message that worker picks up (unlike a
+`spawn()`ed actor's crash, which gets a fresh instance on restart).
+
 **When to reach for `spawn_pool()`**: work items arrive faster than one
 actor could get through them, but each item is cheap enough (or I/O-bound
 enough — see the warning below) that a handful of workers keep up, and
-you don't care *which* worker handles a given item. **When not to**: if
-workers need their own independent state across messages (`spawn_pool()`
-workers are stateless between calls — everything a `process()` call needs
-comes in through `msg`/its shared `*args`/`**kwargs`, not `self`), or if
-"the same kind of message must always land on the same worker" matters
-(e.g. per-key ordering) — for that, go back to `n_workers` plain
-`sup.spawn()` calls and route by `hash(key) % n_workers` yourself. And if
-you need to wait for *several* independent replies at once rather than
-one pool answering one `ask()`, `asyncio.gather()` over several `ask()`
-calls (pool or not) is the tool — see the mixture-of-experts pattern in
-[AI agents & MCP](ai-agents.md).
+you don't care *which* worker handles a given item — pick the function
+form for stateless work, the class form when workers should keep state
+across messages. **When not to**: if "the same kind of message must
+always land on the same worker" matters (e.g. per-key ordering) — for
+that, go back to `n_workers` plain `sup.spawn()` calls and route by
+`hash(key) % n_workers` yourself. And if you need to wait for *several*
+independent replies at once rather than one pool answering one `ask()`,
+`asyncio.gather()` over several `ask()` calls (pool or not) is the tool —
+see the mixture-of-experts pattern in [AI agents & MCP](ai-agents.md).
 
 !!! warning "This parallelism is for I/O-bound work, not CPU-bound work"
     A pool helps because `await asyncio.sleep(...)` (or a network call, or
