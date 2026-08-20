@@ -44,7 +44,10 @@ version bump. This hasn't been run at production scale yet — see
   protocol changes for either.
 - `Supervisor.spawn_pool()`: a fixed worker pool (function or `@actor`
   class handlers) with `queue_capacity` backpressure, `key=` sharding for
-  per-key ordering, and `executor="thread"|"process"` for CPU-bound work.
+  per-key ordering, and `executor="thread"|"process"` for CPU-bound work;
+  the returned `PoolRef` adds `.map()` (gather-and-collect over `ask()`)
+  and `.stop()` (tears down just that pool), and `spawn_pool()` itself
+  doubles as an async context manager.
   `ActorRef.ask_stream()`/`MessageMeta.reply_stream()`/`reply_final()` for
   streaming replies instead of one final answer.
 
@@ -116,6 +119,7 @@ uv run python bench/bench_remote.py   # throughput benchmarks
 uv run python bench/bench_latency.py  # RTT latency percentiles
 uv run python bench/bench_codec.py    # codec + JSON conversion path, layer by layer
 uv run python bench/bench_memory.py   # RSS under sustained load, connection churn, and mailbox backpressure
+uv run python bench/bench_pool.py     # spawn_pool(): executor= CPU speedup, queue_capacity bounding, stop() cleanup
 ```
 
 Nothing is installed on the OS: everything lives in `.venv`.
@@ -174,13 +178,17 @@ Measured on this machine (Python 3.14, loopback):
 
 ## Publishing to PyPI
 
-```bash
-uv build                      # produce wheel (abi3) + sdist in dist/
-uv publish                    # upload to PyPI (uses UV_PUBLISH_TOKEN)
-```
+`uv build` produces a local wheel (abi3) + sdist in `dist/` for testing, but
+the actual release is not a manual `uv publish`: pushing to `main` and then
+publishing a GitHub Release (which creates the matching `vX.Y.Z` tag) triggers
+`.github/workflows/publish.yml` — it re-runs the test suite, builds wheels for
+Linux (manylinux), macOS (x86_64 + arm64), and Windows via `maturin-action`,
+installs and smoke-tests each built wheel on its target OS, and only then
+publishes to PyPI via a Trusted Publisher (OIDC — no token stored anywhere).
 
-CI (`./.github/workflows/ci.yml`) runs the test matrix on Python 3.11-3.14, a
-Docker Compose end-to-end check, and builds the distributable artifacts.
+CI (`./.github/workflows/ci.yml`) runs on every push/PR: the test matrix on
+Python 3.11-3.14, a Docker Compose end-to-end check, and a build of the
+distributable artifacts (not published from there).
 
 ## Project layout
 
