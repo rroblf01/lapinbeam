@@ -3,7 +3,7 @@ name = "order-stream-worker"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "lapinbeam>=1.0.2",
+    "lapinbeam>=1.2.0",
     "asyncpg>=0.30",
 ]
 
