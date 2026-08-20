@@ -25,39 +25,42 @@ of `1.0.0`, a breaking change requires a major version bump.
   caught internally and reported via `on_event(kind="pool_worker_error")`
   instead of crashing the worker — nothing ever sends a pool worker a
   second message on its own mailbox, so a crashed worker would never
-  restart itself the way a normal actor does. `handler` may also be an
-  `@actor`-decorated class instead of a plain function: `spawn_pool()`
-  then builds one instance per worker (`args`/`kwargs` go to its
-  constructor, like `spawn()`) and dispatches each message through that
-  instance's own `@on` handlers (or `receive`), giving workers real
-  per-instance state across messages instead of the stateless-function
-  form. Three more `spawn_pool()` options: `queue_capacity` bounds the
-  internal queue (same convention as `Node(mailbox_capacity=...)`) —
-  once full, a further `send()` is dropped and reported via
-  `on_event(kind="pool_queue_full")`, same shape as `mailbox_full`;
-  `key(msg)` shards the pool — each worker gets its own queue and every
-  message with the same key always lands on the same worker in arrival
-  order, trading load-balance for per-key ordering; `executor="thread"`/
-  `"process"` runs a plain **synchronous** `handler` off the event loop
-  in a real `ThreadPoolExecutor`/`ProcessPoolExecutor` sized to
-  `n_workers`, for genuinely CPU-bound work (auto-replies with the
-  handler's return value for `ask()`/`ask_stream()` callers) —
-  `executor="process"` doesn't support an `@actor` class handler and
-  requires a picklable, module-level `handler`. `spawn_pool()` itself now
-  returns an object that's both awaitable (`pool = await
-  sup.spawn_pool(...)`, as before) and an async context manager
-  (`async with sup.spawn_pool(...) as pool:`, which calls `pool.stop()`
-  on the way out) — and the resulting `PoolRef` gained two methods:
-  `pool.map(items)`, `asyncio.gather()` over `ask()` for every item in
-  order (with `return_exceptions` passed through); and `pool.stop()`,
-  which tears down just this pool's dispatcher and workers (shutting down
-  its executor too, if it has one) without touching anything else on the
-  same `Supervisor`, and frees `name` for a later `spawn_pool()` call —
-  for a server that creates and destroys pools over its lifetime instead
-  of keeping one fixed at startup. See
+  restart itself the way a normal actor does. See
   [Concurrency](https://rroblf01.github.io/lapinbeam/getting-started/#concurrency-one-actor-handles-one-message-at-a-time)
-  for when a pool — and which handler shape and option — is the right
-  tool.
+  for when a pool — and which handler shape and option below — is the
+  right tool.
+    - `handler` may also be an `@actor`-decorated class instead of a
+      plain function: `spawn_pool()` then builds one instance per worker
+      (`args`/`kwargs` go to its constructor, like `spawn()`) and
+      dispatches each message through that instance's own `@on` handlers
+      (or `receive`), giving workers real per-instance state across
+      messages instead of the stateless-function form.
+    - `queue_capacity` bounds the internal queue (same convention as
+      `Node(mailbox_capacity=...)`) — once full, a further `send()` is
+      dropped and reported via `on_event(kind="pool_queue_full")`, same
+      shape as `mailbox_full`.
+    - `key(msg)` shards the pool — each worker gets its own queue and
+      every message with the same key always lands on the same worker in
+      arrival order, trading load-balance for per-key ordering.
+    - `executor="thread"`/`"process"` runs a plain **synchronous**
+      `handler` off the event loop in a real
+      `ThreadPoolExecutor`/`ProcessPoolExecutor` sized to `n_workers`,
+      for genuinely CPU-bound work (auto-replies with the handler's
+      return value for `ask()`/`ask_stream()` callers) —
+      `executor="process"` doesn't support an `@actor` class handler and
+      requires a picklable, module-level `handler`.
+    - `spawn_pool()` itself now returns an object that's both awaitable
+      (`pool = await sup.spawn_pool(...)`, as before) and an async
+      context manager (`async with sup.spawn_pool(...) as pool:`, which
+      calls `pool.stop()` on the way out).
+    - The resulting `PoolRef` gained two methods: `pool.map(items)`
+      (`asyncio.gather()` over `ask()` for every item, in order, with
+      `return_exceptions` passed through), and `pool.stop()` (tears down
+      just this pool's dispatcher and workers, shutting down its
+      executor too if it has one, without touching anything else on the
+      same `Supervisor` — and frees `name` for a later `spawn_pool()`
+      call, for a server that creates and destroys pools over its
+      lifetime instead of keeping one fixed at startup).
 - **`ActorRef.ask_stream()` / `RemoteRef.ask_stream()`**, plus
   `MessageMeta.reply_stream()`/`reply_final()`: a streaming counterpart to
   `ask()`, for a handler that needs to report *progress*, not just a

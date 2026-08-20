@@ -68,14 +68,14 @@ CPU al trabajo que `worker` tiene entre manos.
 > **Nota:** `Supervisor.spawn_pool()` y `ask_stream()`/`reply_stream()`/
 > `reply_final()` son nuevos en el paquete y todavía no están publicados
 > en PyPI en el momento de escribir esto — hace falta `lapinbeam>=1.3.0`
-> (ver `CHANGELOG.md`). `app/pyproject.toml` y `worker/pyproject.toml` ya
-> exigen `lapinbeam>=1.3.0`, pero sus `uv.lock` siguen apuntando a la
-> `1.2.0` real publicada (`uv lock` no puede resolver `>=1.3.0` hasta que
-> exista de verdad en PyPI) — así que, ahora mismo, `docker compose up
-> --build` falla en el paso `uv sync --locked` de ambos contenedores.
-> En cuanto se publique `1.3.0`, ejecuta `uv lock` dentro de `app/` y de
-> `worker/` para regenerar sus `uv.lock` y el ejemplo vuelve a funcionar
-> sin más cambios.
+> (ver `CHANGELOG.md`). `app/pyproject.toml` y `worker/pyproject.toml`
+> exigen por ahora `lapinbeam>=1.2.0` (la última versión real publicada,
+> y la que tienen resuelta sus `uv.lock`), así que `docker compose up
+> --build` construye la imagen sin problema — pero el proceso fallará en
+> cuanto arranque, porque la `1.2.0` instalada todavía no trae
+> `spawn_pool()`/`ask_stream()`. En cuanto se publique `1.3.0`, sube el
+> suelo a `lapinbeam>=1.3.0` en ambos `pyproject.toml` y ejecuta `uv lock`
+> dentro de `app/` y de `worker/` para que el ejemplo funcione de verdad.
 
 ## Ejecutarlo
 

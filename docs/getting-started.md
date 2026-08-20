@@ -190,6 +190,55 @@ independent replies at once rather than one pool answering one `ask()`,
 `asyncio.gather()` over several `ask()` calls (pool or not) is the tool —
 see the mixture-of-experts pattern in [AI agents & MCP](ai-agents.md).
 
+!!! warning "This parallelism is for I/O-bound work, not CPU-bound work — unless you ask for an executor"
+    A pool helps because `await asyncio.sleep(...)` (or a network call, or
+    any other `await` that actually yields control) lets asyncio interleave
+    every actor's wait on the same thread. It does **not** help a handler
+    that's doing real, synchronous CPU work with no `await` in it at all —
+    Python's asyncio event loop is single-threaded, so N actors all
+    crunching numbers still run one after another, exactly as slow as N
+    sequential calls inside one actor.
+
+    For genuinely CPU-bound work, pass `executor="process"` (or
+    `"thread"`, for a blocking call that isn't CPU-bound but has no async
+    equivalent, e.g. a synchronous C library or DB driver) — `handler`
+    must then be a plain **synchronous** function, run off the event loop
+    in a real `ProcessPoolExecutor`/`ThreadPoolExecutor` sized to
+    `n_workers`. Its return value is sent back automatically if the
+    message came in through `ask()`/`ask_stream()`:
+
+    ```python
+    def crunch(msg):          # plain def, not async def
+        return sum(i * i for i in range(msg["n"]))
+
+
+    async def main():
+        async with Node("app@127.0.0.1:0") as node:
+            sup = Supervisor(node=node)
+            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
+            result = await pool.ask({"n": 10_000_000})
+
+
+    if __name__ == "__main__":     # required for executor="process" — see below
+        asyncio.run(main())
+    ```
+
+    `executor="process"` doesn't support an `@actor` class `handler` —
+    there's no way to keep Python state on `self` across a process
+    boundary — and requires `handler` plus every message/`args`/`kwargs`
+    it's called with to be picklable (a module-level function, not a
+    closure or lambda). It also inherits the standard `multiprocessing`
+    requirement that the entry script guard its top-level code with
+    `if __name__ == "__main__":` — without it, a worker process re-imports
+    the script as `__main__` and re-runs everything at module scope
+    (including `asyncio.run(main())` itself), which at best duplicates
+    work and at worst hangs. `executor="thread"` has no such restriction —
+    it shares the parent process instead of spawning new ones. An
+    alternative that sidesteps both constraints:
+    split the work across separate OS processes yourself — several
+    lapinbeam `Node`s, possibly on different machines, talking over the
+    network the same way the two-node example below does.
+
 ### Backpressure: bounding the pool's queue
 
 By default the pool's internal queue is unbounded — if `pool.send()` is
@@ -269,55 +318,6 @@ async with sup.spawn_pool(process, 5, name="processors") as pool:
     await asyncio.sleep(2)
 # pool.stop() already called here
 ```
-
-!!! warning "This parallelism is for I/O-bound work, not CPU-bound work — unless you ask for an executor"
-    A pool helps because `await asyncio.sleep(...)` (or a network call, or
-    any other `await` that actually yields control) lets asyncio interleave
-    every actor's wait on the same thread. It does **not** help a handler
-    that's doing real, synchronous CPU work with no `await` in it at all —
-    Python's asyncio event loop is single-threaded, so N actors all
-    crunching numbers still run one after another, exactly as slow as N
-    sequential calls inside one actor.
-
-    For genuinely CPU-bound work, pass `executor="process"` (or
-    `"thread"`, for a blocking call that isn't CPU-bound but has no async
-    equivalent, e.g. a synchronous C library or DB driver) — `handler`
-    must then be a plain **synchronous** function, run off the event loop
-    in a real `ProcessPoolExecutor`/`ThreadPoolExecutor` sized to
-    `n_workers`. Its return value is sent back automatically if the
-    message came in through `ask()`/`ask_stream()`:
-
-    ```python
-    def crunch(msg):          # plain def, not async def
-        return sum(i * i for i in range(msg["n"]))
-
-
-    async def main():
-        async with Node("app@127.0.0.1:0") as node:
-            sup = Supervisor(node=node)
-            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
-            result = await pool.ask({"n": 10_000_000})
-
-
-    if __name__ == "__main__":     # required for executor="process" — see below
-        asyncio.run(main())
-    ```
-
-    `executor="process"` doesn't support an `@actor` class `handler` —
-    there's no way to keep Python state on `self` across a process
-    boundary — and requires `handler` plus every message/`args`/`kwargs`
-    it's called with to be picklable (a module-level function, not a
-    closure or lambda). It also inherits the standard `multiprocessing`
-    requirement that the entry script guard its top-level code with
-    `if __name__ == "__main__":` — without it, a worker process re-imports
-    the script as `__main__` and re-runs everything at module scope
-    (including `asyncio.run(main())` itself), which at best duplicates
-    work and at worst hangs. `executor="thread"` has no such restriction —
-    it shares the parent process instead of spawning new ones. An
-    alternative that sidesteps both constraints:
-    split the work across separate OS processes yourself — several
-    lapinbeam `Node`s, possibly on different machines, talking over the
-    network the same way the two-node example below does.
 
 ## Two nodes talking to each other
 

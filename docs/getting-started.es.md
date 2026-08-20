@@ -196,6 +196,58 @@ responda a un único `ask()`, la herramienta es `asyncio.gather()` sobre
 varios `ask()` (con pool o sin él) — ver el patrón de mixture-of-experts
 en [Agentes de IA y MCP](ai-agents.es.md).
 
+!!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound — salvo que pidas un executor"
+    Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
+    o cualquier otro `await` que ceda el control de verdad) permite a
+    asyncio intercalar la espera de cada actor en el mismo hilo. **No**
+    ayuda a un handler que hace trabajo de CPU síncrono de verdad, sin
+    ningún `await` dentro — el bucle de eventos de asyncio es de un solo
+    hilo, así que N actores machacando números siguen corriendo uno detrás
+    de otro, igual de lento que N llamadas secuenciales dentro de un solo
+    actor.
+
+    Para trabajo genuinamente CPU-bound, pasa `executor="process"` (o
+    `"thread"`, para una llamada bloqueante que no es CPU-bound pero no
+    tiene equivalente async, p.ej. una librería C o un driver de BBDD
+    síncronos) — `handler` debe ser entonces una función **síncrona**
+    normal, ejecutada fuera del event loop en un
+    `ProcessPoolExecutor`/`ThreadPoolExecutor` real, dimensionado a
+    `n_workers`. Su valor de retorno se envía de vuelta automáticamente si
+    el mensaje llegó por `ask()`/`ask_stream()`:
+
+    ```python
+    def crunch(msg):          # def normal, no async def
+        return sum(i * i for i in range(msg["n"]))
+
+
+    async def main():
+        async with Node("app@127.0.0.1:0") as node:
+            sup = Supervisor(node=node)
+            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
+            result = await pool.ask({"n": 10_000_000})
+
+
+    if __name__ == "__main__":     # necesario con executor="process" — ver abajo
+        asyncio.run(main())
+    ```
+
+    `executor="process"` no admite una clase `@actor` como `handler` — no
+    hay forma de mantener estado de Python en `self` a través de una
+    frontera de proceso — y exige que `handler` y cada mensaje/`args`/
+    `kwargs` con el que se llame sean serializables con pickle (una
+    función a nivel de módulo, no un closure ni una lambda). También
+    hereda el requisito habitual de `multiprocessing`: el script de
+    entrada debe proteger su código de nivel de módulo con
+    `if __name__ == "__main__":` — sin eso, un proceso worker reimporta el
+    script como `__main__` y vuelve a ejecutar todo lo de nivel de módulo
+    (incluido el propio `asyncio.run(main())`), lo que en el mejor caso
+    duplica trabajo y en el peor se queda colgado. `executor="thread"` no
+    tiene esta restricción — comparte el proceso padre en vez de lanzar
+    procesos nuevos. Una alternativa que evita ambas restricciones:
+    reparte el trabajo entre procesos de sistema operativo separados —
+    p.ej. varios `Node` de lapinbeam, posiblemente en máquinas distintas,
+    hablando por red igual que el ejemplo de dos nodos de abajo.
+
 ### Backpressure: acotar la cola del pool
 
 Por defecto la cola interna del pool no tiene límite — si `pool.send()` se
@@ -276,58 +328,6 @@ async with sup.spawn_pool(process, 5, name="processors") as pool:
     await asyncio.sleep(2)
 # pool.stop() ya se ha llamado aquí
 ```
-
-!!! warning "Este paralelismo es para trabajo I/O-bound, no CPU-bound — salvo que pidas un executor"
-    Un pool ayuda porque `await asyncio.sleep(...)` (o una llamada de red,
-    o cualquier otro `await` que ceda el control de verdad) permite a
-    asyncio intercalar la espera de cada actor en el mismo hilo. **No**
-    ayuda a un handler que hace trabajo de CPU síncrono de verdad, sin
-    ningún `await` dentro — el bucle de eventos de asyncio es de un solo
-    hilo, así que N actores machacando números siguen corriendo uno detrás
-    de otro, igual de lento que N llamadas secuenciales dentro de un solo
-    actor.
-
-    Para trabajo genuinamente CPU-bound, pasa `executor="process"` (o
-    `"thread"`, para una llamada bloqueante que no es CPU-bound pero no
-    tiene equivalente async, p.ej. una librería C o un driver de BBDD
-    síncronos) — `handler` debe ser entonces una función **síncrona**
-    normal, ejecutada fuera del event loop en un
-    `ProcessPoolExecutor`/`ThreadPoolExecutor` real, dimensionado a
-    `n_workers`. Su valor de retorno se envía de vuelta automáticamente si
-    el mensaje llegó por `ask()`/`ask_stream()`:
-
-    ```python
-    def crunch(msg):          # def normal, no async def
-        return sum(i * i for i in range(msg["n"]))
-
-
-    async def main():
-        async with Node("app@127.0.0.1:0") as node:
-            sup = Supervisor(node=node)
-            pool = await sup.spawn_pool(crunch, 4, name="crunchers", executor="process")
-            result = await pool.ask({"n": 10_000_000})
-
-
-    if __name__ == "__main__":     # necesario con executor="process" — ver abajo
-        asyncio.run(main())
-    ```
-
-    `executor="process"` no admite una clase `@actor` como `handler` — no
-    hay forma de mantener estado de Python en `self` a través de una
-    frontera de proceso — y exige que `handler` y cada mensaje/`args`/
-    `kwargs` con el que se llame sean serializables con pickle (una
-    función a nivel de módulo, no un closure ni una lambda). También
-    hereda el requisito habitual de `multiprocessing`: el script de
-    entrada debe proteger su código de nivel de módulo con
-    `if __name__ == "__main__":` — sin eso, un proceso worker reimporta el
-    script como `__main__` y vuelve a ejecutar todo lo de nivel de módulo
-    (incluido el propio `asyncio.run(main())`), lo que en el mejor caso
-    duplica trabajo y en el peor se queda colgado. `executor="thread"` no
-    tiene esta restricción — comparte el proceso padre en vez de lanzar
-    procesos nuevos. Una alternativa que evita ambas restricciones:
-    reparte el trabajo entre procesos de sistema operativo separados —
-    p.ej. varios `Node` de lapinbeam, posiblemente en máquinas distintas,
-    hablando por red igual que el ejemplo de dos nodos de abajo.
 
 ## Dos nodos hablando entre sí
 
