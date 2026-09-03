@@ -102,6 +102,29 @@ jobs:
       - name: mypy
         run: uv run --with mypy --no-project -- mypy lapinbeam/
 
+  # Scans for known CVEs in the actual dependency trees that ship (Rust,
+  # via Cargo.lock) and that CI/dev tooling pulls in (Python, via uv.lock) —
+  # the runtime `lapinbeam` package itself declares zero Python dependencies,
+  # so this mostly guards the dev/test toolchain on the Python side. Neither
+  # tool needs installing on the runner's OS: cargo-audit comes from a
+  # prebuilt binary, pip-audit runs ephemeral inside `uv run --with`.
+  security-audit:
+    name: dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit (Rust dependencies)
+        run: cargo audit
+      - name: Build extension and install deps
+        run: uv sync
+      - name: pip-audit (Python dependencies)
+        run: uv run --with pip-audit -- pip-audit
+
   build-wheels:
     name: build wheels
     runs-on: ubuntu-latest
